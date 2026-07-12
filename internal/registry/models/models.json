@@ -22,7 +22,7 @@
       "owned_by": "anthropic",
       "type": "claude",
       "display_name": "Claude 4.5 Sonnet",
-      "context_length": 200000,
+      "context_length": 1000000,
       "max_completion_tokens": 64000,
       "thinking": {
         "min": 1024,
@@ -37,7 +37,7 @@
       "owned_by": "anthropic",
       "type": "claude",
       "display_name": "Claude 4.6 Sonnet",
-      "context_length": 200000,
+      "context_length": 1000000,
       "max_completion_tokens": 64000,
       "thinking": {
         "min": 1024,
@@ -172,7 +172,7 @@
       "type": "claude",
       "display_name": "Claude 4.5 Opus",
       "description": "Premium model combining maximum intelligence with practical performance",
-      "context_length": 200000,
+      "context_length": 1000000,
       "max_completion_tokens": 64000,
       "thinking": {
         "min": 1024,
@@ -187,7 +187,7 @@
       "owned_by": "anthropic",
       "type": "claude",
       "display_name": "Claude 4.1 Opus",
-      "context_length": 200000,
+      "context_length": 1000000,
       "max_completion_tokens": 32000,
       "thinking": {
         "min": 1024,
@@ -201,7 +201,7 @@
       "owned_by": "anthropic",
       "type": "claude",
       "display_name": "Claude 4 Opus",
-      "context_length": 200000,
+      "context_length": 1000000,
       "max_completion_tokens": 32000,
       "thinking": {
         "min": 1024,
@@ -215,7 +215,7 @@
       "owned_by": "anthropic",
       "type": "claude",
       "display_name": "Claude 4 Sonnet",
-      "context_length": 200000,
+      "context_length": 1000000,
       "max_completion_tokens": 64000,
       "thinking": {
         "min": 1024,
@@ -229,7 +229,7 @@
       "owned_by": "anthropic",
       "type": "claude",
       "display_name": "Claude 3.7 Sonnet",
-      "context_length": 128000,
+      "context_length": 1000000,
       "max_completion_tokens": 8192,
       "thinking": {
         "min": 1024,

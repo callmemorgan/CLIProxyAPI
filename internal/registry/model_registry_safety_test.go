@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -172,6 +173,17 @@ func TestLookupModelInfoIncludesClaudeSonnet5(t *testing.T) {
 	for i, level := range expectedLevels {
 		if model.Thinking.Levels[i] != level {
 			t.Fatalf("Claude Sonnet 5 thinking levels = %+v, want %+v", model.Thinking.Levels, expectedLevels)
+		}
+	}
+}
+
+func TestClaudeNonHaikuModelsAdvertiseOneMillionContext(t *testing.T) {
+	for _, model := range GetClaudeModels() {
+		if model == nil || strings.Contains(strings.ToLower(model.ID), "haiku") {
+			continue
+		}
+		if model.ContextLength != 1000000 {
+			t.Errorf("%s context length = %d, want 1000000", model.ID, model.ContextLength)
 		}
 	}
 }
