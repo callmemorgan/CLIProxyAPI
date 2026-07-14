@@ -34,6 +34,7 @@ type UsageReporter struct {
 	source       string
 	reasoning    string
 	serviceTier  string
+	upstreamTier string
 	requestID    string
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
@@ -110,7 +111,7 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
-	r.serviceTier = extractServiceTierFromPayload(payload)
+	r.upstreamTier = extractServiceTierFromPayload(payload)
 	log.WithFields(r.translatedRequestLogFields(format)).Info("upstream request: resolved settings")
 }
 
@@ -129,7 +130,7 @@ func (r *UsageReporter) translatedRequestLogFields(format string) log.Fields {
 		"reasoning_effort":     reasoningEffort,
 		"reasoning_configured": reasoningConfigured,
 	}
-	if serviceTier := strings.TrimSpace(r.serviceTier); serviceTier != "" {
+	if serviceTier := strings.TrimSpace(r.upstreamTier); serviceTier != "" {
 		fields["service_tier"] = serviceTier
 	}
 	if requestID := strings.TrimSpace(r.requestID); requestID != "" {
@@ -299,7 +300,6 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
-		RequestServiceTier:  r.serviceTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
@@ -311,12 +311,11 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 }
 
 func extractServiceTierFromPayload(payload []byte) string {
-	if len(payload) == 0 {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
 		return usage.DefaultServiceTier
 	}
 	for _, path := range []string{"service_tier", "request.service_tier", "response.service_tier"} {
-		serviceTier := strings.TrimSpace(gjson.GetBytes(payload, path).String())
-		if serviceTier != "" {
+		if serviceTier := strings.TrimSpace(gjson.GetBytes(payload, path).String()); serviceTier != "" {
 			return serviceTier
 		}
 	}
