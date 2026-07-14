@@ -77,6 +77,23 @@ func TestNormalizeCodexWindowsAcceptsAlternateShape(t *testing.T) {
 	}
 }
 
+func TestNormalizeCodexWindowsUsesReportedDuration(t *testing.T) {
+	got := normalizeCodexWindows(map[string]any{"rate_limit": map[string]any{
+		"primary_window": map[string]any{
+			"used_percent":         float64(1),
+			"limit_window_seconds": float64(7 * 24 * 60 * 60),
+			"reset_at":             float64(1784514654),
+		},
+		"secondary_window": nil,
+	}})
+	if len(got) != 1 {
+		t.Fatalf("windows = %#v, want one weekly window", got)
+	}
+	if got[0].ID != "weekly" || got[0].Label != "Codex weekly" || got[0].Percent != 1 {
+		t.Fatalf("window = %#v, want Codex weekly at 1%%", got[0])
+	}
+}
+
 func TestNormalizeAntigravityWindowsGroupsModelsAndConvertsRemaining(t *testing.T) {
 	now := time.Date(2026, 7, 12, 16, 0, 0, 0, time.UTC)
 	fraction := func(value float64) *float64 { return &value }

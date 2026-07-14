@@ -355,12 +355,28 @@ func normalizeCodexWindows(body map[string]any) []subscriptionUsageWindow {
 		if !ok {
 			continue
 		}
+		id, label := codexWindowIdentity(raw, candidate.id, candidate.label)
 		resetAt := usageResetAt(raw)
 		windows = append(windows, subscriptionUsageWindow{
-			ID: candidate.id, Label: candidate.label, Used: percent, Limit: 100, Percent: percent, ResetAt: resetAt,
+			ID: id, Label: label, Used: percent, Limit: 100, Percent: percent, ResetAt: resetAt,
 		})
 	}
 	return windows
+}
+
+func codexWindowIdentity(raw map[string]any, fallbackID, fallbackLabel string) (string, string) {
+	seconds, ok := usageNumber(raw["limit_window_seconds"])
+	if !ok {
+		return fallbackID, fallbackLabel
+	}
+	switch {
+	case seconds >= float64(6*24*time.Hour/time.Second):
+		return "weekly", "Codex weekly"
+	case seconds <= float64(6*time.Hour/time.Second):
+		return "5h", "Codex 5h"
+	default:
+		return fallbackID, fallbackLabel
+	}
 }
 
 func usageResetAt(raw map[string]any) string {
