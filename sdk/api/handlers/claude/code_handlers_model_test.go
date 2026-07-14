@@ -13,14 +13,14 @@ import (
 
 func TestSortClaudeModelsByDisplayName(t *testing.T) {
 	models := []map[string]any{
-		{"id": "claude-fable-5-dd-b", "display_name": "Zebra"},
+		{"id": "zebra-model", "display_name": "Zebra"},
 		{"id": "claude-a", "display_name": "Alpha"},
 		{"id": "claude-c", "display_name": "Alpha"},
-		{"id": "claude-fable-5-dd-d", "display_name": "Beta"},
+		{"id": "beta-model", "display_name": "Beta"},
 	}
 	sortClaudeModelsByDisplayName(models)
 
-	wantIDs := []string{"claude-a", "claude-c", "claude-fable-5-dd-d", "claude-fable-5-dd-b"}
+	wantIDs := []string{"claude-a", "claude-c", "beta-model", "zebra-model"}
 	for i, want := range wantIDs {
 		got, _ := models[i]["id"].(string)
 		if got != want {
@@ -99,5 +99,52 @@ func TestRewriteClaudeDDModelInBody(t *testing.T) {
 				t.Fatalf("model = %q, want %q; body=%s", model, tt.wantModel, string(got))
 			}
 		})
+	}
+}
+
+func TestClaudeResponseModel(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "legacy encoded model is retained for the response",
+			body: `{"model":"claude-fable-5-dd-tnega-hsalf-3-inimeg","messages":[]}`,
+			want: "claude-fable-5-dd-tnega-hsalf-3-inimeg",
+		},
+		{
+			name: "real external model is retained for the response",
+			body: `{"model":"gemini-3-flash-agent","messages":[]}`,
+			want: "gemini-3-flash-agent",
+		},
+		{
+			name: "native Claude model is retained for the response",
+			body: `{"model":"claude-sonnet-4-6","messages":[]}`,
+			want: "claude-sonnet-4-6",
+		},
+		{
+			name: "missing model needs no rewrite",
+			body: `{"messages":[]}`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := claudeResponseModel([]byte(tt.body)); got != tt.want {
+				t.Fatalf("response model = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRewriteClaudeResponseModel(t *testing.T) {
+	const clientModel = "gemini-3-flash-agent"
+	response := []byte(`{"id":"msg_1","type":"message","model":"gemini-3-flash-a","content":[]}`)
+
+	got := rewriteClaudeResponseModel(response, clientModel)
+	if model := gjson.GetBytes(got, "model").String(); model != clientModel {
+		t.Fatalf("model = %q, want %q; response=%s", model, clientModel, string(got))
 	}
 }

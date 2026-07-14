@@ -11,22 +11,9 @@ func IsClaudeThinkingModel(model string) bool {
 
 const claudeDDModelPrefix = "claude-fable-5-dd-"
 
-// EnsureClaudeModelIDPrefix rewrites model IDs for Anthropic /models listings.
-// IDs that already start with "claude-" are returned unchanged; all other IDs
-// become "claude-fable-5-dd-" plus the original ID with its characters reversed.
-func EnsureClaudeModelIDPrefix(id string) string {
-	if id == "" {
-		return id
-	}
-	if strings.HasPrefix(id, "claude-") {
-		return id
-	}
-	return claudeDDModelPrefix + reverseModelID(id)
-}
-
-// ResolveClaudeModelIDPrefix reverses EnsureClaudeModelIDPrefix for request routing.
-// IDs that start with "claude-fable-5-dd-" are decoded by stripping the prefix and reversing
-// the remainder. Optional thinking suffixes in model(value) form are preserved.
+// ResolveClaudeModelIDPrefix decodes legacy synthetic model IDs for request routing.
+// New catalogs expose real model IDs directly; this remains only so saved settings and
+// sessions using claude-fable-5-dd-<reversed> continue to work during migration.
 func ResolveClaudeModelIDPrefix(id string) string {
 	if id == "" {
 		return id

@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -81,15 +82,18 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 		return
 	}
 
-	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
+	// Responses must report the same public model ID the client requested. Providers
+	// may return internal model versions that are not valid catalog entries.
+	responseModel := claudeResponseModel(rawJSON)
+	// Continue accepting legacy encoded IDs from existing settings and sessions.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if !streamResult.Exists() || streamResult.Type == gjson.False {
-		h.handleNonStreamingResponse(c, rawJSON)
+		h.handleNonStreamingResponse(c, rawJSON, responseModel)
 	} else {
-		h.handleStreamingResponse(c, rawJSON)
+		h.handleStreamingResponse(c, rawJSON, responseModel)
 	}
 }
 
@@ -149,6 +153,24 @@ func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
 	return updated
 }
 
+// claudeDDResponseModel returns the client-visible compatibility ID when the
+// request model will be decoded for routing. Native Claude model IDs need no
+// response rewrite.
+func claudeResponseModel(rawJSON []byte) string {
+	return gjson.GetBytes(rawJSON, "model").String()
+}
+
+func rewriteClaudeResponseModel(rawJSON []byte, modelName string) []byte {
+	if modelName == "" || !gjson.GetBytes(rawJSON, "model").Exists() {
+		return rawJSON
+	}
+	updated, errSet := sjson.SetBytes(rawJSON, "model", modelName)
+	if errSet != nil {
+		return rawJSON
+	}
+	return updated
+}
+
 // ClaudeModels handles the Claude models listing endpoint.
 // It returns a JSON response containing available Claude models and their specifications.
 //
@@ -156,11 +178,6 @@ func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeModels(c *gin.Context) {
 	models := h.Models()
-	for i := range models {
-		if id, ok := models[i]["id"].(string); ok {
-			models[i]["id"] = util.EnsureClaudeModelIDPrefix(id)
-		}
-	}
 	sortClaudeModelsByDisplayName(models)
 	firstID := ""
 	lastID := ""
@@ -205,7 +222,7 @@ func sortClaudeModelsByDisplayName(models []map[string]any) {
 //   - c: The Gin context for the request
 //   - modelName: The name of the Gemini model to use for content generation
 //   - rawJSON: The raw JSON request body containing generation parameters and content
-func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
+func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte, responseModel string) {
 	c.Header("Content-Type", "application/json")
 	alt := h.GetAlt(c)
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
@@ -241,6 +258,7 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 			}
 		}
 	}
+	resp = rewriteClaudeResponseModel(resp, responseModel)
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
@@ -254,7 +272,7 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 // Parameters:
 //   - c: The Gin context for the request.
 //   - rawJSON: The raw JSON request body.
-func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte) {
+func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byte, responseModel string) {
 	// Get the http.Flusher interface to manually flush the response.
 	// This is crucial for streaming as it allows immediate sending of data chunks
 	flusher, ok := c.Writer.(http.Flusher)
@@ -275,6 +293,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
+	streamRewriter := cliproxyauth.NewStreamRewriter(cliproxyauth.StreamRewriteOptions{RewriteModel: responseModel})
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -327,12 +346,12 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 
 			// Write the first chunk
 			if len(chunk) > 0 {
-				_, _ = c.Writer.Write(chunk)
+				_, _ = c.Writer.Write(streamRewriter.RewriteChunk(chunk))
 				flusher.Flush()
 			}
 
 			// Continue streaming the rest
-			h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan)
+			h.forwardClaudeStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, streamRewriter)
 			return
 		}
 	}
@@ -353,13 +372,16 @@ func pendingClaudeStreamError(errs <-chan *interfaces.ErrorMessage) (*interfaces
 	}
 }
 
-func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage) {
+func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, streamRewriter *cliproxyauth.StreamRewriter) {
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
 			if len(chunk) == 0 {
 				return
 			}
-			_, _ = c.Writer.Write(chunk)
+			_, _ = c.Writer.Write(streamRewriter.RewriteChunk(chunk))
+		},
+		WriteDone: func() {
+			_, _ = c.Writer.Write(streamRewriter.Finish())
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
 			if errMsg == nil {
