@@ -81,6 +81,72 @@ type XAIExecutor struct {
 	cfg *config.Config
 }
 
+type xaiStreamDiagnostics struct {
+	model                  string
+	responseCompleted      bool
+	usagePresent           bool
+	inputTokens            int64
+	outputTokens           int64
+	cachedTokens           int64
+	translatedMessageDelta bool
+	translatedMessageStop  bool
+	contextCanceled        bool
+	scannerError           bool
+}
+
+func (d *xaiStreamDiagnostics) observeCompleted(eventData []byte) {
+	d.responseCompleted = true
+	usageNode := gjson.GetBytes(eventData, "response.usage")
+	d.usagePresent = usageNode.Exists() && usageNode.Type != gjson.Null
+	d.inputTokens = usageNode.Get("input_tokens").Int()
+	d.outputTokens = usageNode.Get("output_tokens").Int()
+	d.cachedTokens = usageNode.Get("input_tokens_details.cached_tokens").Int()
+}
+
+func (d *xaiStreamDiagnostics) observeTranslatedChunk(chunk []byte) {
+	if bytes.Contains(chunk, []byte(`"type":"message_delta"`)) {
+		d.translatedMessageDelta = true
+	}
+	if bytes.Contains(chunk, []byte(`"type":"message_stop"`)) {
+		d.translatedMessageStop = true
+	}
+}
+
+func (d *xaiStreamDiagnostics) outcome() string {
+	switch {
+	case d.contextCanceled && !d.responseCompleted:
+		return "canceled_before_completed"
+	case d.contextCanceled && (!d.translatedMessageDelta || !d.translatedMessageStop):
+		return "completed_downstream_canceled"
+	case d.scannerError && !d.responseCompleted:
+		return "scan_error_before_completed"
+	case !d.responseCompleted:
+		return "disconnected_before_completed"
+	case !d.usagePresent:
+		return "completed_without_usage"
+	case !d.translatedMessageDelta || !d.translatedMessageStop:
+		return "completed_translation_incomplete"
+	default:
+		return "completed_with_usage"
+	}
+}
+
+func (d *xaiStreamDiagnostics) log(ctx context.Context) {
+	helps.LogWithRequestID(ctx).WithFields(log.Fields{
+		"model":                    d.model,
+		"outcome":                  d.outcome(),
+		"response_completed":       d.responseCompleted,
+		"usage_present":            d.usagePresent,
+		"input_tokens":             d.inputTokens,
+		"output_tokens":            d.outputTokens,
+		"cached_tokens":            d.cachedTokens,
+		"translated_message_delta": d.translatedMessageDelta,
+		"translated_message_stop":  d.translatedMessageStop,
+		"context_canceled":         d.contextCanceled,
+		"scanner_error":            d.scannerError,
+	}).Info("xai stream terminal")
+}
+
 // NewXAIExecutor creates a new xAI executor.
 func NewXAIExecutor(cfg *config.Config) *XAIExecutor {
 	return &XAIExecutor{cfg: cfg}
@@ -651,6 +717,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				log.Errorf("xai executor: close response body error: %v", errClose)
 			}
 		}()
+		diagnostics := xaiStreamDiagnostics{model: req.Model}
+		defer diagnostics.log(ctx)
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800)
 		var param any
@@ -663,7 +731,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					diagnostics.observeTranslatedChunk(chunks[i])
 				case <-ctx.Done():
+					diagnostics.contextCanceled = true
 					return false
 				}
 			}
@@ -698,6 +768,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 					case "response.completed":
+						diagnostics.observeCompleted(eventData)
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.Publish(ctx, detail)
 						}
@@ -738,6 +809,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			diagnostics.scannerError = true
+			if ctx.Err() != nil {
+				diagnostics.contextCanceled = true
+			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {

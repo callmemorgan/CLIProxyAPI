@@ -33,6 +33,8 @@ type LogFormatter struct{}
 var logFieldOrder = []string{
 	"provider", "model", "requested_model", "upstream_format",
 	"reasoning_effort", "reasoning_configured", "service_tier",
+	"outcome", "response_completed", "usage_present", "input_tokens", "output_tokens", "cached_tokens",
+	"translated_message_delta", "translated_message_stop", "context_canceled", "scanner_error",
 	"plugin_id", "plugin_name", "source_id",
 	"version", "active_version", "retired_version", "overwritten",
 	"mode", "budget", "level", "original_mode", "original_value", "min", "max", "clamped_to", "error",

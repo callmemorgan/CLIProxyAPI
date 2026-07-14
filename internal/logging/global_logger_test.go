@@ -62,6 +62,47 @@ func TestLogFormatterPrintsResolvedUpstreamSettings(t *testing.T) {
 	}
 }
 
+func TestLogFormatterPrintsXAIStreamDiagnosticFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 7, 13, 17, 52, 31, 0, time.Local)
+	entry.Level = log.InfoLevel
+	entry.Message = "xai stream terminal"
+	entry.Data["model"] = "grok-4.5"
+	entry.Data["outcome"] = "completed_with_usage"
+	entry.Data["response_completed"] = true
+	entry.Data["usage_present"] = true
+	entry.Data["input_tokens"] = int64(21)
+	entry.Data["output_tokens"] = int64(8)
+	entry.Data["cached_tokens"] = int64(5)
+	entry.Data["translated_message_delta"] = true
+	entry.Data["translated_message_stop"] = true
+	entry.Data["context_canceled"] = false
+	entry.Data["scanner_error"] = false
+
+	formatted, errFormat := (&LogFormatter{}).Format(entry)
+	if errFormat != nil {
+		t.Fatalf("Format() error = %v", errFormat)
+	}
+
+	line := string(formatted)
+	for _, want := range []string{
+		"outcome=completed_with_usage",
+		"response_completed=true",
+		"usage_present=true",
+		"input_tokens=21",
+		"output_tokens=8",
+		"cached_tokens=5",
+		"translated_message_delta=true",
+		"translated_message_stop=true",
+		"context_canceled=false",
+		"scanner_error=false",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("formatted line %q missing %s", line, want)
+		}
+	}
+}
+
 func TestLogFormatterPrintsPluginFields(t *testing.T) {
 	entry := log.NewEntry(log.New())
 	entry.Time = time.Date(2026, 6, 25, 20, 10, 0, 0, time.Local)
