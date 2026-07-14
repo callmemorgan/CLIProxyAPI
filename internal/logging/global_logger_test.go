@@ -26,6 +26,42 @@ func TestLogFormatterPrintsVersionField(t *testing.T) {
 	}
 }
 
+func TestLogFormatterPrintsResolvedUpstreamSettings(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 7, 13, 17, 32, 30, 0, time.Local)
+	entry.Level = log.InfoLevel
+	entry.Message = "upstream request: resolved settings"
+	entry.Data["request_id"] = "90bb25ae"
+	entry.Data["provider"] = "codex"
+	entry.Data["model"] = "gpt-5.6-sol"
+	entry.Data["requested_model"] = "claude-fable-5-dd-los-6.5-tpg"
+	entry.Data["upstream_format"] = "codex"
+	entry.Data["reasoning_effort"] = "xhigh"
+	entry.Data["reasoning_configured"] = true
+	entry.Data["service_tier"] = "priority"
+
+	formatted, errFormat := (&LogFormatter{}).Format(entry)
+	if errFormat != nil {
+		t.Fatalf("Format() error = %v", errFormat)
+	}
+
+	line := string(formatted)
+	for _, want := range []string{
+		"[90bb25ae]",
+		"provider=codex",
+		"model=gpt-5.6-sol",
+		"requested_model=claude-fable-5-dd-los-6.5-tpg",
+		"upstream_format=codex",
+		"reasoning_effort=xhigh",
+		"reasoning_configured=true",
+		"service_tier=priority",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("formatted line %q missing %s", line, want)
+		}
+	}
+}
+
 func TestLogFormatterPrintsPluginFields(t *testing.T) {
 	entry := log.NewEntry(log.New())
 	entry.Time = time.Date(2026, 6, 25, 20, 10, 0, 0, time.Local)

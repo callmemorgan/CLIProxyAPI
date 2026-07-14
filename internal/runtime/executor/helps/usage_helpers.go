@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,6 +34,7 @@ type UsageReporter struct {
 	source       string
 	reasoning    string
 	serviceTier  string
+	requestID    string
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
 	ttft         time.Duration
@@ -71,6 +73,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		authType:    resolveUsageAuthType(auth),
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
+		requestID:   internallogging.GetRequestID(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -108,6 +111,31 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
 	r.serviceTier = extractServiceTierFromPayload(payload)
+	log.WithFields(r.translatedRequestLogFields(format)).Info("upstream request: resolved settings")
+}
+
+func (r *UsageReporter) translatedRequestLogFields(format string) log.Fields {
+	reasoningEffort := strings.TrimSpace(r.reasoning)
+	reasoningConfigured := reasoningEffort != ""
+	if !reasoningConfigured {
+		reasoningEffort = "default"
+	}
+
+	fields := log.Fields{
+		"provider":             r.provider,
+		"model":                r.model,
+		"requested_model":      r.alias,
+		"upstream_format":      strings.TrimSpace(format),
+		"reasoning_effort":     reasoningEffort,
+		"reasoning_configured": reasoningConfigured,
+	}
+	if serviceTier := strings.TrimSpace(r.serviceTier); serviceTier != "" {
+		fields["service_tier"] = serviceTier
+	}
+	if requestID := strings.TrimSpace(r.requestID); requestID != "" {
+		fields["request_id"] = requestID
+	}
+	return fields
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {

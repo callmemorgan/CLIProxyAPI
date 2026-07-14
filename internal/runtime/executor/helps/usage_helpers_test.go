@@ -483,6 +483,48 @@ func TestUsageReporterSetTranslatedReasoningEffortUpdatesServiceTier(t *testing.
 	}
 }
 
+func TestUsageReporterTranslatedRequestLogFields(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6-sol", nil)
+	reporter.alias = "claude-fable-5-dd-los-6.5-tpg"
+	reporter.SetTranslatedReasoningEffort([]byte(`{"reasoning":{"effort":"xhigh"},"service_tier":"priority"}`), "codex")
+
+	fields := reporter.translatedRequestLogFields("codex")
+	if fields["provider"] != "codex" {
+		t.Fatalf("provider = %q, want codex", fields["provider"])
+	}
+	if fields["model"] != "gpt-5.6-sol" {
+		t.Fatalf("model = %q, want gpt-5.6-sol", fields["model"])
+	}
+	if fields["requested_model"] != "claude-fable-5-dd-los-6.5-tpg" {
+		t.Fatalf("requested_model = %q, want alias", fields["requested_model"])
+	}
+	if fields["reasoning_effort"] != "xhigh" {
+		t.Fatalf("reasoning_effort = %q, want xhigh", fields["reasoning_effort"])
+	}
+	if fields["reasoning_configured"] != true {
+		t.Fatalf("reasoning_configured = %v, want true", fields["reasoning_configured"])
+	}
+	if fields["service_tier"] != "priority" {
+		t.Fatalf("service_tier = %q, want priority", fields["service_tier"])
+	}
+}
+
+func TestUsageReporterTranslatedRequestLogFieldsShowsDefaultReasoning(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6-sol", nil)
+	reporter.SetTranslatedReasoningEffort([]byte(`{"model":"gpt-5.6-sol"}`), "codex")
+
+	fields := reporter.translatedRequestLogFields("codex")
+	if fields["reasoning_effort"] != "default" {
+		t.Fatalf("reasoning_effort = %q, want default", fields["reasoning_effort"])
+	}
+	if fields["reasoning_configured"] != false {
+		t.Fatalf("reasoning_configured = %v, want false", fields["reasoning_configured"])
+	}
+	if fields["service_tier"] != usage.DefaultServiceTier {
+		t.Fatalf("service_tier = %q, want default", fields["service_tier"])
+	}
+}
+
 func TestUsageReporterSetTranslatedReasoningEffortDefaultsServiceTierWhenRemoved(t *testing.T) {
 	ctx := usage.WithServiceTier(context.Background(), "priority")
 	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
