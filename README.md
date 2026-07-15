@@ -100,6 +100,18 @@ Authentication flags and configuration details are inherited from upstream;
 consult the [upstream guides](https://help.router-for.me/) rather than assuming
 this short README is complete operational documentation.
 
+## Releases
+
+This fork uses fork-specific release tags such as `v7.2.79-fork.1`; it does not
+republish upstream version tags as though they were independent fork releases.
+Every release tag is signed, and every platform archive plus `checksums.txt` is
+bound to its full source commit by an SSH-signed release manifest.
+
+See [SECURITY.md](SECURITY.md) for the pinned signer fingerprint, signature
+namespace, trust boundaries, and end-to-end verification command. A checksum by
+itself detects corruption but does not establish who published an artifact, so
+unsigned checksum files are not treated as sufficient release verification.
+
 ## Contributing
 
 Small fixes to the documented fork delta are welcome for discussion. Broad new

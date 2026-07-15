@@ -22,6 +22,7 @@ and the rest of the proxy remain upstream architecture.
 | Subscription quotas | Expose sanitized Codex, Grok, Antigravity, and Kimi quota windows | `internal/api/handlers/management/subscription_usage.go` |
 | Codex window labels | Classify 5-hour and weekly windows from their duration rather than primary/secondary order | `internal/api/handlers/management/subscription_usage.go` |
 | Claude context metadata | Advertise 1M-token context windows for the Claude routes used by the local harness | `internal/registry/models/models.json` |
+| Public list-price metadata | Project a curated, dated public-price snapshot into OpenAI/xAI model discovery and Claude Code bootstrap metadata | `internal/pricing/`, `sdk/api/handlers/openai/openai_handlers.go`, `internal/api/server.go` |
 | Reasoning diagnostics | Log the resolved upstream reasoning effort and whether it was configured | `internal/runtime/executor/helps/usage_helpers.go` |
 | xAI stream diagnostics | Log terminal stream state, translated completion markers, and token usage | `internal/runtime/executor/xai_executor.go` |
 
@@ -114,6 +115,21 @@ The fork inspects `limit_window_seconds`:
 The endpoint is consumed by `claude-all-usage`, which writes a sanitized cache
 for the local status line.
 
+## Public list-price metadata
+
+The fork keeps a curated public list-price snapshot outside the remotely
+refreshed model registry. Authenticated OpenAI-compatible model discovery adds
+normalized price metadata, including xAI-compatible flat fields where the
+public contract has an exact equivalent. Claude Code receives compatible text
+and cache rates through authenticated `GET /api/claude_cli/bootstrap` under
+`additional_model_costs`.
+
+Prices are list-price equivalents, not observed subscription spend or billing
+records. Exact aliases without published rates, subscription-only routes, and
+models discovered after the snapshot are explicitly marked unavailable instead
+of receiving inferred prices. The snapshot records its date and source URL per
+model.
+
 ## Claude context metadata
 
 The local model registry advertises a 1,000,000-token context length for these
@@ -191,6 +207,8 @@ The functional fork patches are:
 | `8165a639` | Diagnose xAI stream token reporting |
 | `fb187552` | Classify Codex windows by duration |
 | `b839d015` | Preserve real model IDs end to end |
+| `150220fd` | Read Grok credit usage from unified billing |
+| `0660b59a` | Expose public list-price metadata |
 
 To inspect the live relationship with upstream:
 

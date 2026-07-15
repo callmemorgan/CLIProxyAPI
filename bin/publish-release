@@ -1,0 +1,145 @@
+#!/bin/zsh
+set -euo pipefail
+
+readonly root="${0:A:h:h}"
+readonly repo="callmemorgan/CLIProxyAPI"
+readonly workflow="release.yaml"
+readonly namespace="cliproxyapi-release"
+readonly expected_fingerprint="SHA256:yLJtSegpLNiWyJYHeHI3MwP4qez0n+CF+K/EOHos6KY"
+readonly signing_key="${CLIPROXYAPI_SIGNING_KEY:-$HOME/.ssh/id_ed25519_signing}"
+readonly tag="${1:-}"
+
+if [[ -z "$tag" || ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]]; then
+  print -u2 "usage: bin/publish-release v<upstream-version>-fork.<release>"
+  exit 2
+fi
+
+for command in gh git jq ssh-keygen shasum; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    print -u2 "publish-release: required command not found: $command"
+    exit 1
+  fi
+done
+
+if [[ -n "$(git -C "$root" status --porcelain --untracked-files=all)" ]]; then
+  print -u2 "publish-release: the complete worktree must be clean and committed"
+  exit 1
+fi
+
+git -C "$root" fetch origin main --tags --quiet
+head="$(git -C "$root" rev-parse HEAD)"
+readonly head
+origin_head="$(git -C "$root" rev-parse origin/main)"
+readonly origin_head
+if [[ "$head" != "$origin_head" ]]; then
+  print -u2 "publish-release: HEAD must exactly match origin/main"
+  exit 1
+fi
+if git -C "$root" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || \
+   git -C "$root" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || \
+   gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+  print -u2 "publish-release: tag or release already exists: $tag"
+  exit 1
+fi
+if [[ ! -f "$signing_key" ]]; then
+  print -u2 "publish-release: signing key not found: $signing_key"
+  exit 1
+fi
+
+key_fingerprint="$(ssh-keygen -y -f "$signing_key" | ssh-keygen -lf - | awk '{print $2}')"
+readonly key_fingerprint
+if [[ "$key_fingerprint" != "$expected_fingerprint" ]]; then
+  print -u2 "publish-release: signing key fingerprint is not the pinned release key"
+  exit 1
+fi
+
+git -C "$root" tag -s "$tag" -m "CLIProxyAPI limited fork $tag"
+git -C "$root" tag -v "$tag"
+git -C "$root" push origin "$tag"
+
+run_id=""
+for _ in {1..60}; do
+  run_id="$(gh run list --repo "$repo" --workflow "$workflow" --event push --branch "$tag" --limit 1 --json databaseId,headSha --jq ".[] | select(.headSha == \"$head\") | .databaseId" | head -n 1)"
+  [[ -n "$run_id" ]] && break
+  sleep 2
+done
+if [[ -z "$run_id" ]]; then
+  print -u2 "publish-release: release workflow did not start for $tag"
+  exit 1
+fi
+
+gh run watch "$run_id" --repo "$repo" --exit-status
+
+readonly asset_dir="$root/dist/release/$tag"
+rm -rf "$asset_dir"
+mkdir -p "$asset_dir"
+gh release download "$tag" \
+  --repo "$repo" \
+  --pattern 'CLIProxyAPI_*.tar.gz' \
+  --pattern 'CLIProxyAPI_*.zip' \
+  --pattern 'checksums.txt' \
+  --dir "$asset_dir" \
+  --clobber
+
+archive_count="$(find "$asset_dir" -maxdepth 1 -type f \( -name 'CLIProxyAPI_*.tar.gz' -o -name 'CLIProxyAPI_*.zip' \) | wc -l | tr -d ' ')"
+if [[ "$archive_count" -ne 10 ]]; then
+  print -u2 "publish-release: expected 10 platform archives, found $archive_count"
+  exit 1
+fi
+(
+  cd "$asset_dir"
+  shasum -a 256 -c checksums.txt
+)
+
+assets='[]'
+for path in "$asset_dir"/CLIProxyAPI_*.tar.gz "$asset_dir"/CLIProxyAPI_*.zip "$asset_dir/checksums.txt"; do
+  [[ -f "$path" ]] || continue
+  name="${path:t}"
+  sha256="$(shasum -a 256 "$path" | awk '{print $1}')"
+  size="$(stat -f '%z' "$path")"
+  assets="$(jq -c --arg name "$name" --arg sha256 "$sha256" --argjson size "$size" '. + [{name: $name, sha256: $sha256, size: $size}]' <<< "$assets")"
+done
+
+readonly manifest="$asset_dir/release-manifest.json"
+jq -n \
+  --arg tag "$tag" \
+  --arg source_commit "$head" \
+  --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --argjson assets "$assets" \
+  '{schemaVersion: 1, tag: $tag, sourceCommit: $source_commit, publishedAt: $published_at, assets: $assets}' > "$manifest"
+
+ssh-keygen -Y sign -f "$signing_key" -n "$namespace" "$manifest"
+"$root/bin/verify-release-artifacts" "$tag" "$asset_dir" "$head"
+
+gh release upload "$tag" \
+  "$manifest" \
+  "$manifest.sig" \
+  "$root/config/release-signers" \
+  --repo "$repo" \
+  --clobber
+
+remote_dir="$(mktemp -d)"
+trap 'rm -rf "$remote_dir"' EXIT
+gh release download "$tag" --repo "$repo" --dir "$remote_dir" --clobber
+"$root/bin/verify-release-artifacts" "$tag" "$remote_dir" "$head"
+
+notes="$(gh release view "$tag" --repo "$repo" --json body --jq .body)"
+if [[ "$notes" != *'<!-- cliproxyapi-signed-release:start -->'* ]]; then
+  notes_file="$(mktemp)"
+  {
+    print -r -- "$notes"
+    print
+    print '<!-- cliproxyapi-signed-release:start -->'
+    print '## Release verification'
+    print
+    print 'Every platform archive and `checksums.txt` is covered by `release-manifest.json`.'
+    print 'The manifest binds these assets to the full source commit and is signed with the'
+    print '`callmemorgan` SSH release key in the `cliproxyapi-release` namespace. See'
+    print '[SECURITY.md](https://github.com/callmemorgan/CLIProxyAPI/blob/main/SECURITY.md) for verification instructions.'
+    print '<!-- cliproxyapi-signed-release:end -->'
+  } > "$notes_file"
+  gh release edit "$tag" --repo "$repo" --notes-file "$notes_file"
+  rm -f "$notes_file"
+fi
+
+print "Published and verified signed release $tag from $head."

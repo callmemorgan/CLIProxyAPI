@@ -9,6 +9,8 @@ config.yaml
 
 # Generated content
 bin/*
+!bin/publish-release
+!bin/verify-release-artifacts
 logs/*
 conv/*
 temp/*

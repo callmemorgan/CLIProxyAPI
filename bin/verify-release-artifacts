@@ -1,0 +1,116 @@
+#!/bin/zsh
+set -euo pipefail
+
+readonly root="${0:A:h:h}"
+readonly identity="callmemorgan"
+readonly namespace="cliproxyapi-release"
+readonly tag="${1:-}"
+readonly asset_dir="${2:-$root/dist/release/$tag}"
+readonly expected_commit="${3:-}"
+readonly manifest="$asset_dir/release-manifest.json"
+readonly signature="$manifest.sig"
+readonly signers="$root/config/release-signers"
+
+if [[ -z "$tag" ]]; then
+  print -u2 "usage: bin/verify-release-artifacts <tag> [asset-directory] [expected-commit]"
+  exit 2
+fi
+if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]]; then
+  print -u2 "verify-release-artifacts: invalid fork release tag: $tag"
+  exit 1
+fi
+
+for command in jq ssh-keygen shasum; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    print -u2 "verify-release-artifacts: required command not found: $command"
+    exit 1
+  fi
+done
+
+for path in "$manifest" "$signature" "$signers" "$asset_dir/checksums.txt"; do
+  if [[ ! -f "$path" ]]; then
+    print -u2 "verify-release-artifacts: missing required file: $path"
+    exit 1
+  fi
+done
+
+if ! jq -e \
+  --arg tag "$tag" \
+  '
+    .schemaVersion == 1 and
+    .tag == $tag and
+    (.sourceCommit | type == "string" and test("^[0-9a-f]{40}$")) and
+    (.publishedAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+    (.assets | type == "array" and length > 0) and
+    all(.assets[];
+      (.name | type == "string" and test("^(CLIProxyAPI_[A-Za-z0-9._-]+\\.(tar\\.gz|zip)|checksums\\.txt)$")) and
+      (.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+      (.size | type == "number" and . > 0 and floor == .)
+    ) and
+    ([.assets[].name] | length == (unique | length))
+  ' "$manifest" >/dev/null; then
+  print -u2 "verify-release-artifacts: release manifest schema is invalid"
+  exit 1
+fi
+
+if ! ssh-keygen -Y verify \
+  -f "$signers" \
+  -I "$identity" \
+  -n "$namespace" \
+  -s "$signature" < "$manifest" >/dev/null; then
+  print -u2 "verify-release-artifacts: release manifest signature is invalid"
+  exit 1
+fi
+
+manifest_commit="$(jq -r '.sourceCommit' "$manifest")"
+if [[ -n "$expected_commit" ]]; then
+  resolved_commit="$expected_commit"
+elif git -C "$root" rev-parse --verify --quiet "$tag^{commit}" >/dev/null; then
+  resolved_commit="$(git -C "$root" rev-parse "$tag^{commit}")"
+else
+  print -u2 "verify-release-artifacts: cannot resolve signed source tag: $tag"
+  exit 1
+fi
+if [[ -n "$resolved_commit" && "$manifest_commit" != "$resolved_commit" ]]; then
+  print -u2 "verify-release-artifacts: manifest source commit does not match $tag"
+  exit 1
+fi
+if ! git -C "$root" -c gpg.ssh.allowedSignersFile="$signers" tag -v "$tag" >/dev/null; then
+  print -u2 "verify-release-artifacts: source tag signature is invalid: $tag"
+  exit 1
+fi
+
+manifest_names="$(jq -r '.assets[].name' "$manifest" | LC_ALL=C sort)"
+disk_names="$(
+  find "$asset_dir" -maxdepth 1 -type f \( -name 'CLIProxyAPI_*.tar.gz' -o -name 'CLIProxyAPI_*.zip' -o -name 'checksums.txt' \) \
+    -exec basename {} \; | LC_ALL=C sort
+)"
+if [[ "$manifest_names" != "$disk_names" ]]; then
+  print -u2 "verify-release-artifacts: manifest asset set does not match downloaded release assets"
+  exit 1
+fi
+
+while IFS=$'\t' read -r name expected_sha expected_size; do
+  if [[ "$name" != "${name:t}" || "$name" == *".."* ]]; then
+    print -u2 "verify-release-artifacts: invalid asset name: $name"
+    exit 1
+  fi
+  path="$asset_dir/$name"
+  if [[ ! -f "$path" ]]; then
+    print -u2 "verify-release-artifacts: missing asset: $name"
+    exit 1
+  fi
+  actual_sha="$(shasum -a 256 "$path" | awk '{print $1}')"
+  actual_size="$(stat -f '%z' "$path" 2>/dev/null || stat -c '%s' "$path")"
+  if [[ "$actual_sha" != "$expected_sha" || "$actual_size" != "$expected_size" ]]; then
+    print -u2 "verify-release-artifacts: hash or size mismatch: $name"
+    exit 1
+  fi
+done < <(jq -r '.assets[] | [.name, .sha256, (.size | tostring)] | @tsv' "$manifest")
+
+(
+  cd "$asset_dir"
+  shasum -a 256 -c checksums.txt
+)
+
+print "Verified signed release $tag from $manifest_commit."
