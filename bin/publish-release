@@ -8,9 +8,15 @@ readonly namespace="cliproxyapi-release"
 readonly expected_fingerprint="SHA256:yLJtSegpLNiWyJYHeHI3MwP4qez0n+CF+K/EOHos6KY"
 readonly signing_key="${CLIPROXYAPI_SIGNING_KEY:-$HOME/.ssh/id_ed25519_signing}"
 readonly tag="${1:-}"
+readonly mode="${2:-}"
+resume=false
+if [[ "$mode" == "--resume" ]]; then
+  resume=true
+fi
+readonly resume
 
-if [[ -z "$tag" || ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]]; then
-  print -u2 "usage: bin/publish-release v<upstream-version>-fork.<release>"
+if [[ -z "$tag" || ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ || ( -n "$mode" && "$mode" != "--resume" ) ]]; then
+  print -u2 "usage: bin/publish-release v<upstream-version>-fork.<release> [--resume]"
   exit 2
 fi
 
@@ -35,12 +41,6 @@ if [[ "$head" != "$origin_head" ]]; then
   print -u2 "publish-release: HEAD must exactly match origin/main"
   exit 1
 fi
-if git -C "$root" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || \
-   git -C "$root" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || \
-   gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-  print -u2 "publish-release: tag or release already exists: $tag"
-  exit 1
-fi
 if [[ ! -f "$signing_key" ]]; then
   print -u2 "publish-release: signing key not found: $signing_key"
   exit 1
@@ -53,16 +53,49 @@ if [[ "$key_fingerprint" != "$expected_fingerprint" ]]; then
   exit 1
 fi
 
-git -C "$root" tag -s "$tag" -m "CLIProxyAPI limited fork $tag"
-git -C "$root" tag -v "$tag"
-git -C "$root" push origin "$tag"
+if [[ "$resume" == true ]]; then
+  if ! git -C "$root" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+    print -u2 "publish-release: cannot resume missing tag: $tag"
+    exit 1
+  fi
+  source_commit="$(git -C "$root" rev-parse "$tag^{commit}")"
+  remote_commit="$(git -C "$root" ls-remote origin "refs/tags/$tag^{}" | awk 'NR == 1 {print $1}')"
+  if [[ -z "$remote_commit" || "$remote_commit" != "$source_commit" ]]; then
+    print -u2 "publish-release: remote signed tag does not match the local source tag"
+    exit 1
+  fi
+  git -C "$root" -c gpg.ssh.allowedSignersFile="$root/config/release-signers" tag -v "$tag"
+else
+  if git -C "$root" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || \
+     git -C "$root" ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || \
+     gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+    print -u2 "publish-release: tag or release already exists: $tag"
+    exit 1
+  fi
+  source_commit="$head"
+  git -C "$root" tag -s "$tag" -m "CLIProxyAPI limited fork $tag"
+  git -C "$root" -c gpg.ssh.allowedSignersFile="$root/config/release-signers" tag -v "$tag"
+  git -C "$root" push origin "$tag"
+fi
+readonly source_commit
 
 run_id=""
-for _ in {1..60}; do
-  run_id="$(gh run list --repo "$repo" --workflow "$workflow" --event push --branch "$tag" --limit 1 --json databaseId,headSha --jq ".[] | select(.headSha == \"$head\") | .databaseId" | head -n 1)"
-  [[ -n "$run_id" ]] && break
-  sleep 2
-done
+if [[ "$resume" != true ]]; then
+  for _ in {1..10}; do
+    run_id="$(gh run list --repo "$repo" --workflow "$workflow" --event push --branch "$tag" --limit 1 --json databaseId,headSha --jq ".[] | select(.headSha == \"$source_commit\") | .databaseId" | head -n 1)"
+    [[ -n "$run_id" ]] && break
+    sleep 2
+  done
+fi
+if [[ -z "$run_id" ]]; then
+  dispatch_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  gh workflow run "$workflow" --repo "$repo" --ref main -f tag="$tag"
+  for _ in {1..60}; do
+    run_id="$(gh run list --repo "$repo" --workflow "$workflow" --event workflow_dispatch --limit 10 --json databaseId,createdAt --jq ".[] | select(.createdAt >= \"$dispatch_started\") | .databaseId" | head -n 1)"
+    [[ -n "$run_id" ]] && break
+    sleep 2
+  done
+fi
 if [[ -z "$run_id" ]]; then
   print -u2 "publish-release: release workflow did not start for $tag"
   exit 1
@@ -103,13 +136,13 @@ done
 readonly manifest="$asset_dir/release-manifest.json"
 jq -n \
   --arg tag "$tag" \
-  --arg source_commit "$head" \
+  --arg source_commit "$source_commit" \
   --arg published_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --argjson assets "$assets" \
   '{schemaVersion: 1, tag: $tag, sourceCommit: $source_commit, publishedAt: $published_at, assets: $assets}' > "$manifest"
 
 ssh-keygen -Y sign -f "$signing_key" -n "$namespace" "$manifest"
-"$root/bin/verify-release-artifacts" "$tag" "$asset_dir" "$head"
+"$root/bin/verify-release-artifacts" "$tag" "$asset_dir" "$source_commit"
 
 gh release upload "$tag" \
   "$manifest" \
@@ -121,7 +154,7 @@ gh release upload "$tag" \
 remote_dir="$(mktemp -d)"
 trap 'rm -rf "$remote_dir"' EXIT
 gh release download "$tag" --repo "$repo" --dir "$remote_dir" --clobber
-"$root/bin/verify-release-artifacts" "$tag" "$remote_dir" "$head"
+"$root/bin/verify-release-artifacts" "$tag" "$remote_dir" "$source_commit"
 
 notes="$(gh release view "$tag" --repo "$repo" --json body --jq .body)"
 if [[ "$notes" != *'<!-- cliproxyapi-signed-release:start -->'* ]]; then
@@ -142,4 +175,4 @@ if [[ "$notes" != *'<!-- cliproxyapi-signed-release:start -->'* ]]; then
   rm -f "$notes_file"
 fi
 
-print "Published and verified signed release $tag from $head."
+print "Published and verified signed release $tag from $source_commit."
