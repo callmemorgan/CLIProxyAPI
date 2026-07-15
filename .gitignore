@@ -1,6 +1,7 @@
 # Binaries
 cli-proxy-api
 build/
+dist/
 *.exe
 
 # Configuration

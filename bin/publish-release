@@ -10,13 +10,18 @@ readonly signing_key="${CLIPROXYAPI_SIGNING_KEY:-$HOME/.ssh/id_ed25519_signing}"
 readonly tag="${1:-}"
 readonly mode="${2:-}"
 resume=false
-if [[ "$mode" == "--resume" ]]; then
+finalize=false
+if [[ "$mode" == "--resume" || "$mode" == "--finalize" ]]; then
   resume=true
 fi
+if [[ "$mode" == "--finalize" ]]; then
+  finalize=true
+fi
 readonly resume
+readonly finalize
 
-if [[ -z "$tag" || ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ || ( -n "$mode" && "$mode" != "--resume" ) ]]; then
-  print -u2 "usage: bin/publish-release v<upstream-version>-fork.<release> [--resume]"
+if [[ -z "$tag" || ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ || ( -n "$mode" && "$mode" != "--resume" && "$mode" != "--finalize" ) ]]; then
+  print -u2 "usage: bin/publish-release v<upstream-version>-fork.<release> [--resume|--finalize]"
   exit 2
 fi
 
@@ -80,14 +85,25 @@ fi
 readonly source_commit
 
 run_id=""
-if [[ "$resume" != true ]]; then
+if [[ "$finalize" == true ]]; then
+  run_id="${CLIPROXYAPI_RELEASE_RUN_ID:-}"
+  if [[ -z "$run_id" ]]; then
+    print -u2 "publish-release: --finalize requires CLIPROXYAPI_RELEASE_RUN_ID"
+    exit 1
+  fi
+  run_state="$(gh run view "$run_id" --repo "$repo" --json conclusion,event,workflowName --jq '[.conclusion, .event, .workflowName] | @tsv')"
+  if [[ "$run_state" != $'success\tworkflow_dispatch\trelease' ]]; then
+    print -u2 "publish-release: release workflow is not a successful manual release run: $run_id"
+    exit 1
+  fi
+elif [[ "$resume" != true ]]; then
   for _ in {1..10}; do
     run_id="$(gh run list --repo "$repo" --workflow "$workflow" --event push --branch "$tag" --limit 1 --json databaseId,headSha --jq ".[] | select(.headSha == \"$source_commit\") | .databaseId" | head -n 1)"
     [[ -n "$run_id" ]] && break
     sleep 2
   done
 fi
-if [[ -z "$run_id" ]]; then
+if [[ -z "$run_id" && "$finalize" != true ]]; then
   dispatch_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   gh workflow run "$workflow" --repo "$repo" --ref main -f tag="$tag"
   for _ in {1..60}; do
@@ -125,11 +141,11 @@ fi
 )
 
 assets='[]'
-for path in "$asset_dir"/CLIProxyAPI_*.tar.gz "$asset_dir"/CLIProxyAPI_*.zip "$asset_dir/checksums.txt"; do
-  [[ -f "$path" ]] || continue
-  name="${path:t}"
-  sha256="$(shasum -a 256 "$path" | awk '{print $1}')"
-  size="$(stat -f '%z' "$path")"
+for asset_path in "$asset_dir"/CLIProxyAPI_*.tar.gz "$asset_dir"/CLIProxyAPI_*.zip "$asset_dir/checksums.txt"; do
+  [[ -f "$asset_path" ]] || continue
+  name="${asset_path:t}"
+  sha256="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
+  size="$(stat -f '%z' "$asset_path")"
   assets="$(jq -c --arg name "$name" --arg sha256 "$sha256" --argjson size "$size" '. + [{name: $name, sha256: $sha256, size: $size}]' <<< "$assets")"
 done
 

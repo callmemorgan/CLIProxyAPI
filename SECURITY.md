@@ -3,7 +3,7 @@
 ## Release verification
 
 Releases of this limited fork use fork-specific tags such as
-`v7.2.79-fork.1`. The tags are signed, and the release includes an SSH-signed
+`v7.2.79-fork.2`. The tags are signed, and the release includes an SSH-signed
 manifest covering every platform archive plus `checksums.txt`. The manifest
 records the full Git source commit used by the release workflow.
 
@@ -22,7 +22,7 @@ From a checkout of the released tag, download all release assets into one
 directory and run:
 
 ```bash
-bin/verify-release-artifacts v7.2.79-fork.1 /path/to/downloaded/assets
+bin/verify-release-artifacts v7.2.79-fork.2 /path/to/downloaded/assets
 ```
 
 The verifier rejects the release unless the Git tag and release manifest have

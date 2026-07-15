@@ -27,9 +27,9 @@ for command in jq ssh-keygen shasum; do
   fi
 done
 
-for path in "$manifest" "$signature" "$signers" "$asset_dir/checksums.txt"; do
-  if [[ ! -f "$path" ]]; then
-    print -u2 "verify-release-artifacts: missing required file: $path"
+for required_path in "$manifest" "$signature" "$signers" "$asset_dir/checksums.txt"; do
+  if [[ ! -f "$required_path" ]]; then
+    print -u2 "verify-release-artifacts: missing required file: $required_path"
     exit 1
   fi
 done
@@ -95,13 +95,13 @@ while IFS=$'\t' read -r name expected_sha expected_size; do
     print -u2 "verify-release-artifacts: invalid asset name: $name"
     exit 1
   fi
-  path="$asset_dir/$name"
-  if [[ ! -f "$path" ]]; then
+  asset_path="$asset_dir/$name"
+  if [[ ! -f "$asset_path" ]]; then
     print -u2 "verify-release-artifacts: missing asset: $name"
     exit 1
   fi
-  actual_sha="$(shasum -a 256 "$path" | awk '{print $1}')"
-  actual_size="$(stat -f '%z' "$path" 2>/dev/null || stat -c '%s' "$path")"
+  actual_sha="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
+  actual_size="$(stat -f '%z' "$asset_path" 2>/dev/null || stat -c '%s' "$asset_path")"
   if [[ "$actual_sha" != "$expected_sha" || "$actual_size" != "$expected_size" ]]; then
     print -u2 "verify-release-artifacts: hash or size mismatch: $name"
     exit 1

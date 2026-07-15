@@ -102,7 +102,7 @@ this short README is complete operational documentation.
 
 ## Releases
 
-This fork uses fork-specific release tags such as `v7.2.79-fork.1`; it does not
+This fork uses fork-specific release tags such as `v7.2.79-fork.2`; it does not
 republish upstream version tags as though they were independent fork releases.
 Every release tag is signed, and every platform archive plus `checksums.txt` is
 bound to its full source commit by an SSH-signed release manifest.
