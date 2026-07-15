@@ -33,6 +33,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
@@ -521,6 +522,7 @@ func (s *Server) setupRoutes() {
 	v1.Use(AuthMiddleware(s.accessManager))
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+		v1.GET("/models/:model_id", openaiHandlers.OpenAIModel)
 		v1.GET("/subscription-usage", s.mgmt.GetSubscriptionUsage)
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		v1.POST("/completions", openaiHandlers.Completions)
@@ -537,6 +539,14 @@ func (s *Server) setupRoutes() {
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 		v1.POST("/alpha/search", s.codexAlphaSearch)
+	}
+
+	claudeCLI := s.engine.Group("/api/claude_cli")
+	claudeCLI.Use(AuthMiddleware(s.accessManager))
+	{
+		claudeCLI.GET("/bootstrap", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"additional_model_costs": pricing.ClaudeCosts()})
+		})
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")

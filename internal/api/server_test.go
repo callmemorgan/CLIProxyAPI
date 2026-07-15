@@ -905,6 +905,9 @@ func TestModelsDispatchByAnthropicVersionHeader(t *testing.T) {
 		if claudeModel == nil {
 			t.Fatalf("expected claude-sonnet-4-6 in response, got %s", rr.Body.String())
 		}
+		if _, ok := claudeModel["pricing"]; ok {
+			t.Fatalf("Claude discovery shape unexpectedly contains pricing: %v", claudeModel)
+		}
 		if externalModel == nil {
 			t.Fatalf("expected gpt-4o in response, got %s", rr.Body.String())
 		}
@@ -1031,6 +1034,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if gpt55 == nil {
 		t.Fatal("expected gpt-5.5 codex catalog entry")
 	}
+	if _, ok := gpt55["pricing"]; ok {
+		t.Fatalf("Codex discovery shape unexpectedly contains pricing: %v", gpt55)
+	}
 	if _, ok := gpt55["minimal_client_version"]; !ok {
 		t.Fatal("expected minimal_client_version in codex catalog")
 	}
@@ -1100,6 +1106,120 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			t.Fatalf("expected hidden model %s in codex catalog", slug)
 		}
 	}
+}
+
+func TestPricingDiscoveryAndBootstrap(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	clientID := "test-pricing-discovery"
+	modelRegistry.RegisterClient(clientID, "openai", []*registry.ModelInfo{
+		{ID: "gpt-5.4", Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: "gpt-5.3-codex-spark", Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: "model-discovered-after-snapshot", Object: "model", OwnedBy: "test", Type: "openai"},
+	})
+	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
+
+	server := newTestServer(t)
+
+	t.Run("bootstrap requires authentication", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/claude_cli/bootstrap", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code == http.StatusOK {
+			t.Fatalf("unauthenticated bootstrap unexpectedly succeeded: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("bootstrap returns native complete costs only", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/claude_cli/bootstrap", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+		}
+		var response struct {
+			Costs map[string]struct {
+				Input      float64  `json:"input_tokens"`
+				Output     float64  `json:"output_tokens"`
+				CacheWrite float64  `json:"prompt_cache_write_tokens"`
+				Cache1h    *float64 `json:"prompt_cache_write_1h_tokens"`
+				CacheRead  float64  `json:"prompt_cache_read_tokens"`
+				Search     float64  `json:"web_search_requests"`
+			} `json:"additional_model_costs"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		cost, ok := response.Costs["claude-opus-4-8"]
+		if !ok || cost.Input != 5 || cost.Output != 25 || cost.CacheWrite != 6.25 || cost.Cache1h == nil || *cost.Cache1h != 10 || cost.CacheRead != 0.5 || cost.Search != 0.01 {
+			t.Fatalf("unexpected Claude cost: %#v", cost)
+		}
+		if _, ok := response.Costs["gpt-5.3-codex-spark"]; ok {
+			t.Fatal("unavailable model included in additional_model_costs")
+		}
+	})
+
+	t.Run("openai list includes normalized and xai-compatible pricing", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+		}
+		var response struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		models := make(map[string]map[string]any)
+		for _, model := range response.Data {
+			id, _ := model["id"].(string)
+			models[id] = model
+		}
+		priced := models["gpt-5.4"]
+		pricing, _ := priced["pricing"].(map[string]any)
+		if pricing["status"] != "priced" || priced["prompt_text_token_price"] != float64(25000) || priced["long_context_threshold"] != float64(272001) {
+			t.Fatalf("unexpected priced model: %#v", priced)
+		}
+		unavailablePricing, _ := models["gpt-5.3-codex-spark"]["pricing"].(map[string]any)
+		if unavailablePricing["status"] != "unavailable" || unavailablePricing["unavailable_reason"] != "research_preview_unpriced" {
+			t.Fatalf("unexpected unavailable model: %#v", models["gpt-5.3-codex-spark"])
+		}
+		missingPricing, _ := models["model-discovered-after-snapshot"]["pricing"].(map[string]any)
+		if missingPricing["unavailable_reason"] != "not_in_snapshot" {
+			t.Fatalf("unexpected missing snapshot model: %#v", models["model-discovered-after-snapshot"])
+		}
+	})
+
+	t.Run("model detail matches list metadata", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models/gpt-5.4", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 body=%s", rr.Code, rr.Body.String())
+		}
+		var model map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &model); err != nil {
+			t.Fatal(err)
+		}
+		pricing, _ := model["pricing"].(map[string]any)
+		if model["id"] != "gpt-5.4" || pricing["status"] != "priced" || model["prompt_text_token_price"] != float64(25000) {
+			t.Fatalf("unexpected detail model: %#v", model)
+		}
+	})
+
+	t.Run("model detail returns not found", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models/no-such-model", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), "model_not_found") {
+			t.Fatalf("status = %d, want 404 model_not_found body=%s", rr.Code, rr.Body.String())
+		}
+	})
 }
 
 func codexClientTestPriority(raw any) int {

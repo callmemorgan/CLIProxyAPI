@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/pricing"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -67,31 +68,57 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	// Get all available models
 	allModels := h.Models()
 
-	// Filter to only include the 4 required fields: id, object, created, owned_by
+	// Keep the standard model fields and add the fork's normalized public
+	// list-price snapshot. Codex requests return earlier in their native shape.
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
-		filteredModel := map[string]any{
-			"id":     model["id"],
-			"object": model["object"],
-		}
-
-		// Add created field if it exists
-		if created, exists := model["created"]; exists {
-			filteredModel["created"] = created
-		}
-
-		// Add owned_by field if it exists
-		if ownedBy, exists := model["owned_by"]; exists {
-			filteredModel["owned_by"] = ownedBy
-		}
-
-		filteredModels[i] = filteredModel
+		filteredModels[i] = modelWithPricing(model)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
 		"data":   filteredModels,
 	})
+}
+
+// OpenAIModel handles /v1/models/{id} using the same metadata as the list endpoint.
+func (h *OpenAIAPIHandler) OpenAIModel(c *gin.Context) {
+	modelID := c.Param("model_id")
+	for _, model := range h.Models() {
+		if id, _ := model["id"].(string); id == modelID {
+			c.JSON(http.StatusOK, modelWithPricing(model))
+			return
+		}
+	}
+	c.JSON(http.StatusNotFound, gin.H{
+		"error": gin.H{
+			"message": fmt.Sprintf("The model %q does not exist", modelID),
+			"type":    "invalid_request_error",
+			"code":    "model_not_found",
+		},
+	})
+}
+
+func modelWithPricing(model map[string]any) map[string]any {
+	result := map[string]any{
+		"id":     model["id"],
+		"object": model["object"],
+	}
+	if created, exists := model["created"]; exists {
+		result["created"] = created
+	}
+	if ownedBy, exists := model["owned_by"]; exists {
+		result["owned_by"] = ownedBy
+	}
+
+	modelID, _ := model["id"].(string)
+	record := pricing.Lookup(modelID)
+	record.ModelID = ""
+	result["pricing"] = record
+	for field, value := range pricing.XAIFields(record) {
+		result[field] = value
+	}
+	return result
 }
 
 // ChatCompletions handles the /v1/chat/completions endpoint.
