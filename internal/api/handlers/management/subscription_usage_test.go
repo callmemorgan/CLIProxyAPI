@@ -52,6 +52,73 @@ func TestNormalizeGrokImplicitZeroWeeklyWindow(t *testing.T) {
 	}
 }
 
+func TestNormalizeGrokCreditUsagePercent(t *testing.T) {
+	// Live shape from cli-chat-proxy.grok.com/v1/billing?format=credits
+	// (unified billing). creditUsagePercent is the period utilization; the
+	// old weeklyUsagePercent field is no longer present.
+	got := normalizeGrokWindows(map[string]any{
+		"currentPeriod": map[string]any{
+			"type": "USAGE_PERIOD_TYPE_WEEKLY",
+			"end":  "2026-07-18T03:03:02.845262+00:00",
+		},
+		"creditUsagePercent": float64(3),
+		"productUsage": []any{
+			map[string]any{"product": "GrokBuild", "usagePercent": float64(3)},
+			map[string]any{"product": "Api"},
+		},
+	})
+	if len(got) != 1 {
+		t.Fatalf("windows = %#v, want one weekly window", got)
+	}
+	if got[0].ID != "weekly" || got[0].Label != "Grok weekly" || got[0].Percent != 3 || got[0].Used != 3 {
+		t.Fatalf("window = %#v, want Grok weekly at 3%%", got[0])
+	}
+	if got[0].ResetAt != "2026-07-18T03:03:02.845262+00:00" {
+		t.Fatalf("resetAt = %q", got[0].ResetAt)
+	}
+}
+
+func TestNormalizeGrokProductUsageFallback(t *testing.T) {
+	got := normalizeGrokWindows(map[string]any{
+		"currentPeriod": map[string]any{
+			"type": "USAGE_PERIOD_TYPE_WEEKLY",
+			"end":  "2026-07-18T03:03:02Z",
+		},
+		"productUsage": []any{
+			map[string]any{"product": "Api"},
+			map[string]any{"product": "GrokBuild", "usagePercent": float64(12.5)},
+		},
+	})
+	if len(got) != 1 || got[0].Percent != 12.5 || got[0].ID != "weekly" {
+		t.Fatalf("windows = %#v, want GrokBuild product usage 12.5%%", got)
+	}
+}
+
+func TestNormalizeGrokLegacyWeeklyUsagePercent(t *testing.T) {
+	got := normalizeGrokWindows(map[string]any{
+		"currentPeriod":       map[string]any{"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": "2026-07-18T03:03:02Z"},
+		"weeklyUsagePercent":  float64(42),
+		"creditUsagePercent":  nil, // absent in legacy responses
+	})
+	// creditUsagePercent nil is not a number; fall through to weeklyUsagePercent.
+	if len(got) != 1 || got[0].Percent != 42 || got[0].ID != "weekly" {
+		t.Fatalf("windows = %#v, want legacy weekly 42%%", got)
+	}
+}
+
+func TestNormalizeGrokZeroCreditUsagePercent(t *testing.T) {
+	// Zero is a real reading and must not be collapsed into the implicit path
+	// (which also yields 0, but without Used/Percent set explicitly is fine —
+	// the important bit is we do not invent a second window or drop the bar).
+	got := normalizeGrokWindows(map[string]any{
+		"currentPeriod":      map[string]any{"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": "2026-07-18T03:03:02Z"},
+		"creditUsagePercent": float64(0),
+	})
+	if len(got) != 1 || got[0].Percent != 0 || got[0].ID != "weekly" {
+		t.Fatalf("windows = %#v, want explicit 0%% weekly", got)
+	}
+}
+
 func TestNormalizeCodexWindows(t *testing.T) {
 	got := normalizeCodexWindows(map[string]any{"rate_limit": map[string]any{
 		"primary_window":   map[string]any{"used_percent": float64(5), "reset_at": float64(1783832346)},

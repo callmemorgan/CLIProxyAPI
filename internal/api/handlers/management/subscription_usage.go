@@ -438,9 +438,28 @@ func fetchGrokSubscriptionUsage(ctx context.Context, auths []*coreauth.Auth, now
 }
 
 func normalizeGrokWindows(config map[string]any) []subscriptionUsageWindow {
-	var windows []subscriptionUsageWindow
+	if config == nil {
+		return nil
+	}
 	period, _ := config["currentPeriod"].(map[string]any)
 	resetAt := usageString(period["end"])
+	if resetAt == "" {
+		resetAt = usageString(config["billingPeriodEnd"])
+	}
+	id, label := grokPeriodIdentity(period)
+
+	// Current unified-billing shape from /v1/billing?format=credits.
+	// creditUsagePercent is the period utilization; productUsage breaks it down
+	// by product (GrokBuild vs Api). Older clients used weeklyUsagePercent /
+	// monthlyUsagePercent / endmonthcreditUsagePercent instead.
+	if percent, ok := usageNumber(config["creditUsagePercent"]); ok {
+		return []subscriptionUsageWindow{{ID: id, Label: label, Used: percent, Limit: 100, Percent: percent, ResetAt: resetAt}}
+	}
+	if percent, ok := grokProductUsagePercent(config["productUsage"]); ok {
+		return []subscriptionUsageWindow{{ID: id, Label: label, Used: percent, Limit: 100, Percent: percent, ResetAt: resetAt}}
+	}
+
+	var windows []subscriptionUsageWindow
 	for _, candidate := range []struct {
 		id, label, percent string
 	}{
@@ -452,18 +471,58 @@ func normalizeGrokWindows(config map[string]any) []subscriptionUsageWindow {
 			windows = append(windows, subscriptionUsageWindow{ID: candidate.id, Label: candidate.label, Used: percent, Limit: 100, Percent: percent, ResetAt: resetAt})
 		}
 	}
-	// Grok omits the utilization field when it is zero, while /usage show
-	// still renders the declared current period as 0%.
-	if len(windows) == 0 && resetAt != "" {
-		periodType := strings.ToUpper(usageString(period["type"]))
-		switch {
-		case strings.Contains(periodType, "WEEKLY"):
-			windows = append(windows, subscriptionUsageWindow{ID: "weekly", Label: "Grok weekly", Limit: 100, ResetAt: resetAt})
-		case strings.Contains(periodType, "MONTHLY"):
-			windows = append(windows, subscriptionUsageWindow{ID: "monthly", Label: "Grok monthly", Limit: 100, ResetAt: resetAt})
+	if len(windows) > 0 {
+		return windows
+	}
+
+	// Grok omits utilization when it is zero, while /usage show still renders
+	// the declared current period as 0%.
+	if resetAt != "" {
+		return []subscriptionUsageWindow{{ID: id, Label: label, Limit: 100, ResetAt: resetAt}}
+	}
+	return nil
+}
+
+func grokPeriodIdentity(period map[string]any) (id, label string) {
+	periodType := strings.ToUpper(usageString(period["type"]))
+	switch {
+	case strings.Contains(periodType, "MONTHLY"):
+		return "monthly", "Grok monthly"
+	default:
+		// Weekly is the common SuperGrok / Grok Build window; unknown types
+		// still surface as weekly so the statusline has a bar to show.
+		return "weekly", "Grok weekly"
+	}
+}
+
+// grokProductUsagePercent prefers GrokBuild (the CLI product), then the first
+// product entry that reports usagePercent.
+func grokProductUsagePercent(value any) (float64, bool) {
+	items, ok := value.([]any)
+	if !ok {
+		return 0, false
+	}
+	var fallback float64
+	var hasFallback bool
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		percent, ok := usageNumber(entry["usagePercent"])
+		if !ok {
+			continue
+		}
+		product := usageString(entry["product"])
+		if strings.EqualFold(product, "GrokBuild") || strings.EqualFold(product, "Grok") {
+			return percent, true
+		}
+		if !hasFallback {
+			fallback = percent
+			hasFallback = true
 		}
 	}
-	return windows
+	return fallback, hasFallback
 }
 
 func requestedUsageProviders(raw string) []string {
