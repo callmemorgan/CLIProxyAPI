@@ -21,11 +21,11 @@ func TestEmbeddedCatalogCoversLiveSnapshot(t *testing.T) {
 		grok-4.20-multi-agent-0309 grok-4.3 grok-4.5 grok-build-0.1 grok-composer-2.5-fast
 		grok-imagine-image grok-imagine-image-quality grok-imagine-video
 		grok-imagine-video-1.5-preview kimi-k2 kimi-k2-thinking kimi-k2.5 kimi-k2.6
-		kimi-k2.7-code kimi-k2.7-code-highspeed minimax-m3
+		kimi-k2.7-code kimi-k2.7-code-highspeed kimi-k3 minimax-m3
 	`)
 	got := ModelIDs()
-	if len(got) != 55 {
-		t.Fatalf("catalog length = %d, want 55", len(got))
+	if len(got) != 56 {
+		t.Fatalf("catalog length = %d, want 56", len(got))
 	}
 	wantSet := make(map[string]bool, len(want))
 	for _, id := range want {
@@ -66,6 +66,11 @@ func TestCatalogProjections(t *testing.T) {
 	video := Lookup("grok-imagine-video")
 	if len(video.Videos) != 2 || video.Videos[1].USD != 0.07 {
 		t.Fatalf("unexpected video pricing: %#v", video)
+	}
+
+	kimiK3 := Lookup("kimi-k3")
+	if kimiK3.Status != StatusPriced || kimiK3.Tokens == nil || kimiK3.Tokens.Input != 3 || kimiK3.Tokens.CachedInput == nil || *kimiK3.Tokens.CachedInput != 0.3 || kimiK3.Tokens.Output != 15 {
+		t.Fatalf("unexpected Kimi K3 pricing: %#v", kimiK3)
 	}
 
 	missing := Lookup("model-discovered-after-snapshot")

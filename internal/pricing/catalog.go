@@ -18,7 +18,7 @@ const (
 	StatusPriced      = "priced"
 	StatusUnavailable = "unavailable"
 	CurrencyUSD       = "USD"
-	SnapshotDate      = "2026-07-14"
+	SnapshotDate      = "2026-07-16"
 )
 
 // TokenRates are public USD rates per one million tokens.
