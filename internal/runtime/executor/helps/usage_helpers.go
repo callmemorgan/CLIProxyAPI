@@ -23,26 +23,26 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	upstreamTier string
-	requestID    string
-	generate     bool
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider      string
+	executorType  string
+	model         string
+	alias         string
+	authID        string
+	authIndex     string
+	authType      string
+	apiKey        string
+	source        string
+	reasoning     string
+	serviceTier   string
+	effectiveTier string
+	requestID     string
+	generate      bool
+	requestedAt   time.Time
+	ttftMu        sync.RWMutex
+	ttft          time.Duration
+	ttftStart     time.Time
+	ttftSet       bool
+	once          sync.Once
 }
 
 type usageExecutor interface {
@@ -113,7 +113,7 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
-	r.upstreamTier = extractServiceTierFromPayload(payload)
+	r.effectiveTier = extractServiceTierFromPayload(payload)
 	log.WithFields(r.translatedRequestLogFields(format)).Info("upstream request: resolved settings")
 }
 
@@ -132,8 +132,11 @@ func (r *UsageReporter) translatedRequestLogFields(format string) log.Fields {
 		"reasoning_effort":     reasoningEffort,
 		"reasoning_configured": reasoningConfigured,
 	}
-	if serviceTier := strings.TrimSpace(r.upstreamTier); serviceTier != "" {
-		fields["service_tier"] = serviceTier
+	if requestedTier := strings.TrimSpace(r.serviceTier); requestedTier != "" {
+		fields["requested_service_tier"] = requestedTier
+	}
+	if effectiveTier := strings.TrimSpace(r.effectiveTier); effectiveTier != "" {
+		fields["effective_service_tier"] = effectiveTier
 	}
 	if requestID := strings.TrimSpace(r.requestID); requestID != "" {
 		fields["request_id"] = requestID
@@ -286,25 +289,26 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
 	}
 	return usage.Record{
-		Provider:            r.provider,
-		ExecutorType:        r.executorType,
-		Model:               model,
-		Alias:               r.alias,
-		Source:              r.source,
-		APIKey:              r.apiKey,
-		AuthID:              r.authID,
-		AuthIndex:           r.authIndex,
-		AuthType:            r.authType,
-		ReasoningEffort:     r.reasoning,
-		ServiceTier:         r.serviceTier,
-		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
-		Generate:            usage.GenerateFlag(r.generate),
-		RequestedAt:         r.requestedAt,
-		Latency:             r.latency(),
-		TTFT:                r.ttftDuration(),
-		Failed:              failed,
-		Fail:                fail,
-		Detail:              detail,
+		Provider:             r.provider,
+		ExecutorType:         r.executorType,
+		Model:                model,
+		Alias:                r.alias,
+		Source:               r.source,
+		APIKey:               r.apiKey,
+		AuthID:               r.authID,
+		AuthIndex:            r.authIndex,
+		AuthType:             r.authType,
+		ReasoningEffort:      r.reasoning,
+		ServiceTier:          r.serviceTier,
+		EffectiveServiceTier: strings.TrimSpace(r.effectiveTier),
+		ResponseServiceTier:  strings.TrimSpace(detail.ResponseServiceTier),
+		Generate:             usage.GenerateFlag(r.generate),
+		RequestedAt:          r.requestedAt,
+		Latency:              r.latency(),
+		TTFT:                 r.ttftDuration(),
+		Failed:               failed,
+		Fail:                 fail,
+		Detail:               detail,
 	}
 }
 

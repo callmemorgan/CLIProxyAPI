@@ -594,10 +594,14 @@ func TestUsageReporterSetTranslatedReasoningEffortPreservesClientServiceTier(t *
 	if record.ServiceTier != "auto" {
 		t.Fatalf("service tier = %q, want %q", record.ServiceTier, "auto")
 	}
+	if record.EffectiveServiceTier != "priority" {
+		t.Fatalf("effective service tier = %q, want priority", record.EffectiveServiceTier)
+	}
 }
 
 func TestUsageReporterTranslatedRequestLogFields(t *testing.T) {
-	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.6-sol", nil)
+	ctx := usage.WithServiceTier(context.Background(), "auto")
+	reporter := NewUsageReporter(ctx, "codex", "gpt-5.6-sol", nil)
 	reporter.alias = "claude-fable-5-dd-los-6.5-tpg"
 	reporter.SetTranslatedReasoningEffort([]byte(`{"reasoning":{"effort":"xhigh"},"service_tier":"priority"}`), "codex")
 
@@ -617,8 +621,11 @@ func TestUsageReporterTranslatedRequestLogFields(t *testing.T) {
 	if fields["reasoning_configured"] != true {
 		t.Fatalf("reasoning_configured = %v, want true", fields["reasoning_configured"])
 	}
-	if fields["service_tier"] != "priority" {
-		t.Fatalf("service_tier = %q, want priority", fields["service_tier"])
+	if fields["requested_service_tier"] != "auto" {
+		t.Fatalf("requested_service_tier = %q, want auto", fields["requested_service_tier"])
+	}
+	if fields["effective_service_tier"] != "priority" {
+		t.Fatalf("effective_service_tier = %q, want priority", fields["effective_service_tier"])
 	}
 }
 
@@ -633,8 +640,8 @@ func TestUsageReporterTranslatedRequestLogFieldsShowsDefaultReasoning(t *testing
 	if fields["reasoning_configured"] != false {
 		t.Fatalf("reasoning_configured = %v, want false", fields["reasoning_configured"])
 	}
-	if fields["service_tier"] != usage.DefaultServiceTier {
-		t.Fatalf("service_tier = %q, want default", fields["service_tier"])
+	if fields["effective_service_tier"] != usage.DefaultServiceTier {
+		t.Fatalf("effective_service_tier = %q, want default", fields["effective_service_tier"])
 	}
 }
 
@@ -647,6 +654,9 @@ func TestUsageReporterSetTranslatedReasoningEffortPreservesServiceTierWhenUpstre
 	record := reporter.buildRecord(usage.Detail{TotalTokens: 3}, false)
 	if record.ServiceTier != "priority" {
 		t.Fatalf("service tier = %q, want %q", record.ServiceTier, "priority")
+	}
+	if record.EffectiveServiceTier != usage.DefaultServiceTier {
+		t.Fatalf("effective service tier = %q, want default", record.EffectiveServiceTier)
 	}
 }
 

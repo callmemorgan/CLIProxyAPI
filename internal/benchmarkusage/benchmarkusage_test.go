@@ -69,19 +69,20 @@ func TestUsagePluginStoresSanitizedClientScopedRecords(t *testing.T) {
 		principal:   "client-secret",
 	})
 	plugin.HandleUsage(ctx, coreusage.Record{
-		Provider:            " codex ",
-		ExecutorType:        "responses",
-		Model:               "gpt-5.6",
-		Alias:               "gpt-5.6-sol",
-		APIKey:              "must-not-leak",
-		AuthID:              "must-not-leak",
-		ReasoningEffort:     "high",
-		ServiceTier:         "auto",
-		ResponseServiceTier: "priority",
-		RequestedAt:         time.Unix(100, 0).UTC(),
-		Latency:             3 * time.Second,
-		TTFT:                400 * time.Millisecond,
-		Generate:            coreusage.GenerateFlag(true),
+		Provider:             " codex ",
+		ExecutorType:         "responses",
+		Model:                "gpt-5.6",
+		Alias:                "gpt-5.6-sol",
+		APIKey:               "must-not-leak",
+		AuthID:               "must-not-leak",
+		ReasoningEffort:      "high",
+		ServiceTier:          "auto",
+		EffectiveServiceTier: "priority",
+		ResponseServiceTier:  "priority",
+		RequestedAt:          time.Unix(100, 0).UTC(),
+		Latency:              3 * time.Second,
+		TTFT:                 400 * time.Millisecond,
+		Generate:             coreusage.GenerateFlag(true),
 		Detail: coreusage.Detail{
 			InputTokens:     10,
 			OutputTokens:    20,
@@ -94,8 +95,14 @@ func TestUsagePluginStoresSanitizedClientScopedRecords(t *testing.T) {
 		t.Fatalf("records = %#v, ok = %v", records, ok)
 	}
 	record := records[0]
-	if record.Provider != "codex" || record.LatencyMS != 3000 || record.TTFTMS != 400 || record.Tokens.TotalTokens != 35 {
+	if record.Provider != "codex" || record.LatencyMS != 3000 || record.TTFTMS != 400 || record.Tokens.TotalTokens != 30 {
 		t.Fatalf("record = %#v", record)
+	}
+	if record.AccountingVersion != coreusage.TokenAccountingSchemaVersion ||
+		record.TokenBreakdown.Quality != coreusage.TokenAccountingQualityComplete ||
+		record.TokenBreakdown.Output.ReasoningTokens != 5 ||
+		record.EffectiveServiceTier != "priority" {
+		t.Fatalf("canonical record = %#v", record)
 	}
 	if _, okWrong := store.Records("different-client", testBenchmarkID); okWrong {
 		t.Fatal("record was visible to another principal")
@@ -108,6 +115,25 @@ func TestUsagePluginStoresSanitizedClientScopedRecords(t *testing.T) {
 		if strings.Contains(string(payload), forbidden) {
 			t.Fatalf("payload contains %q: %s", forbidden, payload)
 		}
+	}
+}
+
+func TestSanitizeRecordUsesClaudeSeparateReasoningAccounting(t *testing.T) {
+	record := sanitizeRecord(coreusage.Record{
+		Provider:     "claude",
+		ExecutorType: "ClaudeExecutor",
+		Detail: coreusage.Detail{
+			InputTokens:     10,
+			OutputTokens:    20,
+			ReasoningTokens: 5,
+		},
+	})
+	if record.Tokens.TotalTokens != 35 ||
+		record.TokenBreakdown.Input.TotalTokens != 10 ||
+		record.TokenBreakdown.Output.TotalTokens != 25 ||
+		record.TokenBreakdown.Output.ReasoningTokens != 5 ||
+		record.TokenBreakdown.Quality != coreusage.TokenAccountingQualityComplete {
+		t.Fatalf("record = %#v", record)
 	}
 }
 
@@ -176,7 +202,7 @@ func TestGetUsageReturnsVersionedNoStoreEnvelope(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.SchemaVersion != 1 || envelope.BenchmarkID != testBenchmarkID || len(envelope.Records) != 1 {
+	if envelope.SchemaVersion != 2 || envelope.BenchmarkID != testBenchmarkID || len(envelope.Records) != 1 {
 		t.Fatalf("envelope = %#v", envelope)
 	}
 }

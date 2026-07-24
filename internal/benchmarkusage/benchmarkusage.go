@@ -44,20 +44,23 @@ type TokenDetail struct {
 
 // Record is the sanitized usage shape exposed to benchmark clients.
 type Record struct {
-	Provider            string      `json:"provider"`
-	ExecutorType        string      `json:"executor_type"`
-	Model               string      `json:"model"`
-	Alias               string      `json:"alias"`
-	ReasoningEffort     string      `json:"reasoning_effort"`
-	ServiceTier         string      `json:"service_tier"`
-	ResponseServiceTier string      `json:"response_service_tier,omitempty"`
-	RequestedAt         time.Time   `json:"requested_at"`
-	LatencyMS           int64       `json:"latency_ms"`
-	TTFTMS              int64       `json:"ttft_ms"`
-	Generate            bool        `json:"generate"`
-	Failed              bool        `json:"failed"`
-	StatusCode          int         `json:"status_code"`
-	Tokens              TokenDetail `json:"tokens"`
+	Provider             string                   `json:"provider"`
+	ExecutorType         string                   `json:"executor_type"`
+	Model                string                   `json:"model"`
+	Alias                string                   `json:"alias"`
+	ReasoningEffort      string                   `json:"reasoning_effort"`
+	ServiceTier          string                   `json:"service_tier"`
+	EffectiveServiceTier string                   `json:"effective_service_tier,omitempty"`
+	ResponseServiceTier  string                   `json:"response_service_tier,omitempty"`
+	AccountingVersion    int                      `json:"accounting_version"`
+	TokenBreakdown       coreusage.TokenBreakdown `json:"token_breakdown"`
+	RequestedAt          time.Time                `json:"requested_at"`
+	LatencyMS            int64                    `json:"latency_ms"`
+	TTFTMS               int64                    `json:"ttft_ms"`
+	Generate             bool                     `json:"generate"`
+	Failed               bool                     `json:"failed"`
+	StatusCode           int                      `json:"status_code"`
+	Tokens               TokenDetail              `json:"tokens"`
 }
 
 // Response is the versioned benchmark usage endpoint envelope.
@@ -147,7 +150,7 @@ func getUsage(store *Store) gin.HandlerFunc {
 			return
 		}
 		c.Header("Cache-Control", "no-store")
-		c.JSON(http.StatusOK, Response{SchemaVersion: 1, BenchmarkID: benchmarkID, Records: records})
+		c.JSON(http.StatusOK, Response{SchemaVersion: 2, BenchmarkID: benchmarkID, Records: records})
 	}
 }
 
@@ -178,36 +181,36 @@ func metadataFromContext(ctx context.Context) (requestMetadata, bool) {
 }
 
 func sanitizeRecord(record coreusage.Record) Record {
-	totalTokens := record.Detail.TotalTokens
-	if totalTokens == 0 {
-		totalTokens = record.Detail.InputTokens + record.Detail.OutputTokens + record.Detail.ReasoningTokens
-	}
+	detail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
 	statusCode := record.Fail.StatusCode
 	if !record.Failed && statusCode == 0 {
 		statusCode = http.StatusOK
 	}
 	return Record{
-		Provider:            strings.TrimSpace(record.Provider),
-		ExecutorType:        strings.TrimSpace(record.ExecutorType),
-		Model:               strings.TrimSpace(record.Model),
-		Alias:               strings.TrimSpace(record.Alias),
-		ReasoningEffort:     strings.TrimSpace(record.ReasoningEffort),
-		ServiceTier:         strings.TrimSpace(record.ServiceTier),
-		ResponseServiceTier: strings.TrimSpace(record.ResponseServiceTier),
-		RequestedAt:         record.RequestedAt,
-		LatencyMS:           record.Latency.Milliseconds(),
-		TTFTMS:              record.TTFT.Milliseconds(),
-		Generate:            coreusage.GenerateEnabled(record.Generate),
-		Failed:              record.Failed,
-		StatusCode:          statusCode,
+		Provider:             strings.TrimSpace(record.Provider),
+		ExecutorType:         strings.TrimSpace(record.ExecutorType),
+		Model:                strings.TrimSpace(record.Model),
+		Alias:                strings.TrimSpace(record.Alias),
+		ReasoningEffort:      strings.TrimSpace(record.ReasoningEffort),
+		ServiceTier:          strings.TrimSpace(record.ServiceTier),
+		EffectiveServiceTier: strings.TrimSpace(record.EffectiveServiceTier),
+		ResponseServiceTier:  strings.TrimSpace(record.ResponseServiceTier),
+		AccountingVersion:    coreusage.TokenAccountingSchemaVersion,
+		TokenBreakdown:       detail.TokenBreakdown,
+		RequestedAt:          record.RequestedAt,
+		LatencyMS:            record.Latency.Milliseconds(),
+		TTFTMS:               record.TTFT.Milliseconds(),
+		Generate:             coreusage.GenerateEnabled(record.Generate),
+		Failed:               record.Failed,
+		StatusCode:           statusCode,
 		Tokens: TokenDetail{
-			InputTokens:         record.Detail.InputTokens,
-			OutputTokens:        record.Detail.OutputTokens,
-			ReasoningTokens:     record.Detail.ReasoningTokens,
-			CachedTokens:        record.Detail.CachedTokens,
-			CacheReadTokens:     record.Detail.CacheReadTokens,
-			CacheCreationTokens: record.Detail.CacheCreationTokens,
-			TotalTokens:         totalTokens,
+			InputTokens:         detail.InputTokens,
+			OutputTokens:        detail.OutputTokens,
+			ReasoningTokens:     detail.ReasoningTokens,
+			CachedTokens:        detail.CachedTokens,
+			CacheReadTokens:     detail.CacheReadTokens,
+			CacheCreationTokens: detail.CacheCreationTokens,
+			TotalTokens:         detail.TotalTokens,
 		},
 	}
 }

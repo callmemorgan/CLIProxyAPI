@@ -131,10 +131,13 @@ GET /v1/benchmark/usage/{benchmark-id}
 
 The response contains the requested alias, concrete provider/model route,
 reasoning and service-tier settings, TTFT, total latency, terminal state, and
-token counters. It never contains prompts, responses, API keys, credential
-identities, arbitrary headers, or upstream bodies. Benchmark capture is
-independent of the general usage-statistics queue and is bounded to 2,048
-short-lived records.
+token counters. Schema 2 retains the legacy counters while adding upstream's
+canonical token-accounting version and mutually exclusive token breakdown.
+That breakdown is the source of truth for totals; legacy counters remain only
+for compatibility and diagnostics. The endpoint never contains prompts,
+responses, API keys, credential identities, arbitrary headers, or upstream
+bodies. Benchmark capture is independent of the general usage-statistics queue
+and is bounded to 2,048 short-lived records.
 
 ## Public list-price metadata
 
@@ -179,12 +182,14 @@ After request translation, the shared usage reporter emits an
 - `upstream_format`
 - `reasoning_effort`
 - `reasoning_configured`
-- `service_tier`, when present
+- `requested_service_tier`, when present
+- `effective_service_tier`, when present
 - `request_id`, when present
 
-This reports the value actually sent upstream, not merely the alias or suffix
-the client requested. When no explicit effort is present, the log records
-`reasoning_effort=default` and `reasoning_configured=false`.
+This separates the tier requested by the client from the tier actually sent
+upstream after translation and overrides. When no explicit effort is present,
+the log records `reasoning_effort=default` and
+`reasoning_configured=false`.
 
 No prompt content or credentials are added to these logs.
 

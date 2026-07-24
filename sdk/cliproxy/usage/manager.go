@@ -34,6 +34,9 @@ type Record struct {
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier.
 	ServiceTier string
+	// EffectiveServiceTier stores the tier present in the final translated
+	// upstream request after defaults and overrides have been applied.
+	EffectiveServiceTier string
 	// RequestServiceTier is a deprecated input-only alias retained for existing
 	// plugin callers. It is normalized into ServiceTier and never emitted.
 	RequestServiceTier string
