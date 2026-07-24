@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	StatusPriced      = "priced"
-	StatusUnavailable = "unavailable"
-	CurrencyUSD       = "USD"
-	SnapshotDate      = "2026-07-16"
+	StatusPriced                    = "priced"
+	StatusUnavailable               = "unavailable"
+	CurrencyUSD                     = "USD"
+	PricingBasisAliasListEquivalent = "alias_list_equivalent"
+	SnapshotDate                    = "2026-07-22"
 )
 
 // TokenRates are public USD rates per one million tokens.
@@ -65,6 +66,8 @@ type Record struct {
 	SnapshotDate      string      `json:"snapshot_date"`
 	EffectiveDate     string      `json:"effective_date"`
 	SourceURL         string      `json:"source_url"`
+	PricingBasis      string      `json:"pricing_basis,omitempty"`
+	MappedFrom        string      `json:"mapped_from,omitempty"`
 	UnavailableReason string      `json:"unavailable_reason,omitempty"`
 	Tokens            *TokenRates `json:"tokens,omitempty"`
 	ImageTokens       *TokenRates `json:"image_tokens,omitempty"`
@@ -152,6 +155,9 @@ func validateRecord(record Record) error {
 		if strings.TrimSpace(record.UnavailableReason) == "" {
 			return fmt.Errorf("unavailable_reason is required")
 		}
+		if record.PricingBasis != "" || record.MappedFrom != "" {
+			return fmt.Errorf("unavailable record must not contain pricing mapping")
+		}
 		if record.Tokens != nil || record.ImageTokens != nil || len(record.Images) > 0 || len(record.Videos) > 0 || record.Tools != nil {
 			return fmt.Errorf("unavailable record must not contain rates")
 		}
@@ -159,6 +165,15 @@ func validateRecord(record Record) error {
 	}
 	if record.UnavailableReason != "" {
 		return fmt.Errorf("priced record must not contain unavailable_reason")
+	}
+	if record.PricingBasis != "" && record.PricingBasis != PricingBasisAliasListEquivalent {
+		return fmt.Errorf("invalid pricing_basis %q", record.PricingBasis)
+	}
+	if record.PricingBasis == PricingBasisAliasListEquivalent && strings.TrimSpace(record.MappedFrom) == "" {
+		return fmt.Errorf("mapped_from is required for alias list-equivalent pricing")
+	}
+	if record.MappedFrom != "" && record.PricingBasis != PricingBasisAliasListEquivalent {
+		return fmt.Errorf("mapped_from requires alias list-equivalent pricing")
 	}
 	if record.Tokens == nil && record.ImageTokens == nil && len(record.Images) == 0 && len(record.Videos) == 0 {
 		return fmt.Errorf("priced record has no rates")

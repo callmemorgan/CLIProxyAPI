@@ -39,6 +39,7 @@ type subscriptionUsageWindow struct {
 	Limit   float64 `json:"limit"`
 	Percent float64 `json:"usedPercent"`
 	ResetAt string  `json:"resetAt,omitempty"`
+	Scope   string  `json:"scope,omitempty"`
 }
 
 var subscriptionHTTPClient = &http.Client{Timeout: 8 * time.Second}
@@ -66,7 +67,13 @@ func (h *Handler) GetSubscriptionUsage(c *gin.Context) {
 		go func() {
 			defer wg.Done()
 			usage := observedProviderUsage(provider, auths, now)
-			if provider == "codex" {
+			if provider == "claude" {
+				if authoritative, errFetch := fetchClaudeSubscriptionUsage(c.Request.Context(), auths, now); errFetch == nil {
+					usage = authoritative
+				} else {
+					usage.Error = errFetch.Error()
+				}
+			} else if provider == "codex" {
 				if authoritative, errFetch := fetchCodexSubscriptionUsage(c.Request.Context(), auths, now); errFetch == nil {
 					usage = authoritative
 				} else {
@@ -98,6 +105,121 @@ func (h *Handler) GetSubscriptionUsage(c *gin.Context) {
 	}
 	wg.Wait()
 	c.JSON(http.StatusOK, result)
+}
+
+type claudeOAuthWindow struct {
+	Utilization *float64 `json:"utilization"`
+	ResetsAt    any      `json:"resets_at"`
+}
+
+type claudeOAuthLimit struct {
+	Kind     string   `json:"kind"`
+	Percent  *float64 `json:"percent"`
+	ResetsAt any      `json:"resets_at"`
+	Scope    *struct {
+		Model *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	} `json:"scope"`
+}
+
+type claudeOAuthUsage struct {
+	FiveHour       *claudeOAuthWindow `json:"five_hour"`
+	SevenDay       *claudeOAuthWindow `json:"seven_day"`
+	SevenDaySonnet *claudeOAuthWindow `json:"seven_day_sonnet"`
+	SevenDayOpus   *claudeOAuthWindow `json:"seven_day_opus"`
+	Limits         []claudeOAuthLimit `json:"limits"`
+}
+
+func fetchClaudeSubscriptionUsage(ctx context.Context, auths []*coreauth.Auth, now time.Time) (subscriptionProviderUsage, error) {
+	var token string
+	for _, auth := range auths {
+		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || auth.Disabled {
+			continue
+		}
+		token, _ = auth.Metadata["access_token"].(string)
+		if strings.TrimSpace(token) != "" {
+			break
+		}
+	}
+	if strings.TrimSpace(token) == "" {
+		return subscriptionProviderUsage{}, fmt.Errorf("Claude access token unavailable")
+	}
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/api/oauth/usage", nil)
+	if errReq != nil {
+		return subscriptionProviderUsage{}, errReq
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	resp, errDo := subscriptionHTTPClient.Do(req)
+	if errDo != nil {
+		return subscriptionProviderUsage{}, fmt.Errorf("Claude usage request failed: %w", errDo)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return subscriptionProviderUsage{}, fmt.Errorf("Claude usage returned HTTP %d", resp.StatusCode)
+	}
+	var payload claudeOAuthUsage
+	if errDecode := json.NewDecoder(resp.Body).Decode(&payload); errDecode != nil {
+		return subscriptionProviderUsage{}, fmt.Errorf("decode Claude usage: %w", errDecode)
+	}
+	windows := normalizeClaudeWindows(payload)
+	if len(windows) == 0 {
+		return subscriptionProviderUsage{}, fmt.Errorf("Claude usage response has no quota windows")
+	}
+	return subscriptionProviderUsage{Mode: "authoritative", FetchedAt: now.Format(time.RFC3339), Windows: windows, State: "available"}, nil
+}
+
+func normalizeClaudeWindows(payload claudeOAuthUsage) []subscriptionUsageWindow {
+	windows := make([]subscriptionUsageWindow, 0, 5)
+	appendAccount := func(id, label string, window *claudeOAuthWindow) {
+		if window == nil || window.Utilization == nil {
+			return
+		}
+		percent := *window.Utilization
+		windows = append(windows, subscriptionUsageWindow{
+			ID: id, Label: label, Used: percent, Limit: 100, Percent: percent, ResetAt: usageResetValue(window.ResetsAt),
+		})
+	}
+	appendAccount("5h", "Claude 5h", payload.FiveHour)
+	appendAccount("weekly", "Claude weekly", payload.SevenDay)
+
+	covered := make(map[string]bool)
+	appendModel := func(label string, percent *float64, resetAt any) {
+		label = strings.TrimSpace(label)
+		if label == "" || percent == nil {
+			return
+		}
+		key := strings.ToLower(label)
+		covered[key] = true
+		windows = append(windows, subscriptionUsageWindow{
+			ID: "model-" + strings.ReplaceAll(key, " ", "-"), Label: label,
+			Used: *percent, Limit: 100, Percent: *percent, ResetAt: usageResetValue(resetAt), Scope: "model",
+		})
+	}
+	for _, limit := range payload.Limits {
+		if limit.Kind != "weekly_scoped" || limit.Scope == nil || limit.Scope.Model == nil {
+			continue
+		}
+		appendModel(limit.Scope.Model.DisplayName, limit.Percent, limit.ResetsAt)
+	}
+	isCovered := func(name string) bool {
+		name = strings.ToLower(name)
+		for label := range covered {
+			if strings.Contains(label, name) {
+				return true
+			}
+		}
+		return false
+	}
+	if !isCovered("sonnet") && payload.SevenDaySonnet != nil {
+		appendModel("Sonnet", payload.SevenDaySonnet.Utilization, payload.SevenDaySonnet.ResetsAt)
+	}
+	if !isCovered("opus") && payload.SevenDayOpus != nil {
+		appendModel("Opus", payload.SevenDayOpus.Utilization, payload.SevenDayOpus.ResetsAt)
+	}
+	return windows
 }
 
 func fetchAntigravitySubscriptionUsage(ctx context.Context, auths []*coreauth.Auth, now time.Time) (subscriptionProviderUsage, error) {
@@ -384,6 +506,10 @@ func usageResetAt(raw map[string]any) string {
 	if value == nil {
 		value = raw["resets_at"]
 	}
+	return usageResetValue(value)
+}
+
+func usageResetValue(value any) string {
 	if text := usageString(value); text != "" {
 		if seconds, err := strconv.ParseInt(text, 10, 64); err == nil {
 			return time.Unix(seconds, 0).UTC().Format(time.RFC3339)
@@ -526,12 +652,12 @@ func grokProductUsagePercent(value any) (float64, bool) {
 }
 
 func requestedUsageProviders(raw string) []string {
-	allowed := map[string]bool{"codex": true, "grok": true, "antigravity": true, "kimi": true}
+	allowed := map[string]bool{"claude": true, "codex": true, "grok": true, "antigravity": true, "kimi": true}
 	if strings.TrimSpace(raw) == "" {
-		return []string{"codex", "grok", "antigravity", "kimi"}
+		return []string{"claude", "codex", "grok", "antigravity", "kimi"}
 	}
 	seen := make(map[string]bool)
-	out := make([]string, 0, 4)
+	out := make([]string, 0, 5)
 	for _, value := range strings.Split(raw, ",") {
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value == "agy" {

@@ -9,8 +9,8 @@ import (
 )
 
 func TestRequestedUsageProviders(t *testing.T) {
-	got := requestedUsageProviders("kimi, agy,codex,kimi,unknown")
-	want := []string{"kimi", "antigravity", "codex"}
+	got := requestedUsageProviders("kimi, agy,claude,codex,kimi,unknown")
+	want := []string{"kimi", "antigravity", "claude", "codex"}
 	if len(got) != len(want) {
 		t.Fatalf("providers = %#v, want %#v", got, want)
 	}
@@ -18,6 +18,78 @@ func TestRequestedUsageProviders(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("providers = %#v, want %#v", got, want)
 		}
+	}
+}
+
+func TestRequestedUsageProvidersDefaultsIncludeClaude(t *testing.T) {
+	got := requestedUsageProviders("")
+	want := []string{"claude", "codex", "grok", "antigravity", "kimi"}
+	if len(got) != len(want) {
+		t.Fatalf("providers = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("providers = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestNormalizeClaudeWindowsIncludesAccountAndModelScopes(t *testing.T) {
+	fiveHour, weekly, sonnet, fable := 2.0, 0.0, 41.5, 67.0
+	payload := claudeOAuthUsage{
+		FiveHour:       &claudeOAuthWindow{Utilization: &fiveHour, ResetsAt: "2026-07-09T23:00:00Z"},
+		SevenDay:       &claudeOAuthWindow{Utilization: &weekly, ResetsAt: "2026-07-11T16:00:00Z"},
+		SevenDaySonnet: &claudeOAuthWindow{Utilization: &sonnet, ResetsAt: "2026-07-11T16:00:00Z"},
+	}
+	var scoped claudeOAuthLimit
+	scoped.Kind = "weekly_scoped"
+	scoped.Percent = &fable
+	scoped.ResetsAt = "2026-07-11T16:00:00Z"
+	scoped.Scope = &struct {
+		Model *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	}{Model: &struct {
+		DisplayName string `json:"display_name"`
+	}{DisplayName: "Fable"}}
+	payload.Limits = []claudeOAuthLimit{scoped}
+
+	got := normalizeClaudeWindows(payload)
+	if len(got) != 4 {
+		t.Fatalf("windows = %#v, want four windows", got)
+	}
+	if got[0].ID != "5h" || got[0].Percent != 2 || got[0].Scope != "" {
+		t.Fatalf("five-hour window = %#v", got[0])
+	}
+	if got[1].ID != "weekly" || got[1].Percent != 0 || got[1].Scope != "" {
+		t.Fatalf("weekly window = %#v", got[1])
+	}
+	if got[2].ID != "model-fable" || got[2].Percent != 67 || got[2].Scope != "model" {
+		t.Fatalf("Fable window = %#v", got[2])
+	}
+	if got[3].ID != "model-sonnet" || got[3].Percent != 41.5 || got[3].Scope != "model" {
+		t.Fatalf("Sonnet window = %#v", got[3])
+	}
+}
+
+func TestNormalizeClaudeScopedWindowSuppressesTopLevelDuplicate(t *testing.T) {
+	topLevel, scopedPercent := 10.0, 12.0
+	payload := claudeOAuthUsage{SevenDaySonnet: &claudeOAuthWindow{Utilization: &topLevel}}
+	var scoped claudeOAuthLimit
+	scoped.Kind = "weekly_scoped"
+	scoped.Percent = &scopedPercent
+	scoped.Scope = &struct {
+		Model *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+	}{Model: &struct {
+		DisplayName string `json:"display_name"`
+	}{DisplayName: "Sonnet 5"}}
+	payload.Limits = []claudeOAuthLimit{scoped}
+
+	got := normalizeClaudeWindows(payload)
+	if len(got) != 1 || got[0].Label != "Sonnet 5" || got[0].Percent != 12 {
+		t.Fatalf("windows = %#v, want scoped Sonnet only", got)
 	}
 }
 
@@ -96,9 +168,9 @@ func TestNormalizeGrokProductUsageFallback(t *testing.T) {
 
 func TestNormalizeGrokLegacyWeeklyUsagePercent(t *testing.T) {
 	got := normalizeGrokWindows(map[string]any{
-		"currentPeriod":       map[string]any{"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": "2026-07-18T03:03:02Z"},
-		"weeklyUsagePercent":  float64(42),
-		"creditUsagePercent":  nil, // absent in legacy responses
+		"currentPeriod":      map[string]any{"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": "2026-07-18T03:03:02Z"},
+		"weeklyUsagePercent": float64(42),
+		"creditUsagePercent": nil, // absent in legacy responses
 	})
 	// creditUsagePercent nil is not a number; fall through to weeklyUsagePercent.
 	if len(got) != 1 || got[0].Percent != 42 || got[0].ID != "weekly" {

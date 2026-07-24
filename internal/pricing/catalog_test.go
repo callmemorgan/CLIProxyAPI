@@ -14,7 +14,9 @@ func TestEmbeddedCatalogCoversLiveSnapshot(t *testing.T) {
 		claude-opus-4-8 claude-sonnet-4-20250514 claude-sonnet-4-5-20250929
 		claude-sonnet-4-6 claude-sonnet-5 codex-auto-review gemini-3-flash
 		gemini-3-flash-agent gemini-3.1-flash-image gemini-3.1-flash-lite gemini-3.1-pro-low
-		gemini-3.5-flash-extra-low gemini-3.5-flash-low gemini-pro-agent glm-5.2
+		gemini-3.5-flash-extra-low gemini-3.5-flash-low gemini-3.6-flash
+		gemini-3.6-flash-extra-low gemini-3.6-flash-high gemini-3.6-flash-low
+		gemini-pro-agent glm-5.2
 		gpt-5.3-codex-spark gpt-5.4 gpt-5.4-mini gpt-5.5 gpt-5.6-luna gpt-5.6-sol
 		gpt-5.6-terra gpt-image-1.5 gpt-image-2 gpt-oss-120b-medium grok-3-mini
 		grok-3-mini-fast grok-4.20-0309-non-reasoning grok-4.20-0309-reasoning
@@ -24,8 +26,8 @@ func TestEmbeddedCatalogCoversLiveSnapshot(t *testing.T) {
 		kimi-k2.7-code kimi-k2.7-code-highspeed kimi-k3 minimax-m3
 	`)
 	got := ModelIDs()
-	if len(got) != 56 {
-		t.Fatalf("catalog length = %d, want 56", len(got))
+	if len(got) != 60 {
+		t.Fatalf("catalog length = %d, want 60", len(got))
 	}
 	wantSet := make(map[string]bool, len(want))
 	for _, id := range want {
@@ -73,9 +75,59 @@ func TestCatalogProjections(t *testing.T) {
 		t.Fatalf("unexpected Kimi K3 pricing: %#v", kimiK3)
 	}
 
+	alias := Lookup("gemini-pro-agent")
+	if alias.Status != StatusPriced || alias.PricingBasis != PricingBasisAliasListEquivalent || alias.MappedFrom != "gemini-3.1-pro-preview" || alias.Tokens == nil || len(alias.Tokens.Tiers) != 1 || alias.Tokens.Tiers[0].MinInputTokens != 200001 {
+		t.Fatalf("unexpected alias-equivalent pricing: %#v", alias)
+	}
+
+	direct := Lookup("gemini-3.6-flash")
+	if direct.Status != StatusPriced || direct.PricingBasis != "" || direct.Tokens == nil || direct.Tokens.Input != 1.5 || direct.Tokens.CachedInput == nil || *direct.Tokens.CachedInput != 0.15 || direct.Tokens.Output != 7.5 {
+		t.Fatalf("unexpected direct pricing: %#v", direct)
+	}
+
 	missing := Lookup("model-discovered-after-snapshot")
 	if missing.Status != StatusUnavailable || missing.UnavailableReason != "not_in_snapshot" {
 		t.Fatalf("unexpected missing pricing: %#v", missing)
+	}
+}
+
+func TestAliasListEquivalentPricing(t *testing.T) {
+	tests := []struct {
+		modelID     string
+		mappedFrom  string
+		input       float64
+		cachedInput float64
+		output      float64
+		videoRates  int
+	}{
+		{"claude-opus-4-6-thinking", "claude-opus-4-6", 5, 0.5, 25, 0},
+		{"gemini-3-flash", "gemini-3-flash-preview", 0.5, 0.05, 3, 0},
+		{"gemini-3-flash-agent", "gemini-3.5-flash", 1.5, 0.15, 9, 0},
+		{"gemini-3.1-pro-low", "gemini-3.1-pro-preview", 2, 0.2, 12, 0},
+		{"gemini-3.5-flash-extra-low", "gemini-3.5-flash", 1.5, 0.15, 9, 0},
+		{"gemini-3.5-flash-low", "gemini-3.5-flash", 1.5, 0.15, 9, 0},
+		{"gemini-3.6-flash-extra-low", "gemini-3.6-flash", 1.5, 0.15, 7.5, 0},
+		{"gemini-3.6-flash-high", "gemini-3.6-flash", 1.5, 0.15, 7.5, 0},
+		{"gemini-3.6-flash-low", "gemini-3.6-flash", 1.5, 0.15, 7.5, 0},
+		{"gemini-pro-agent", "gemini-3.1-pro-preview", 2, 0.2, 12, 0},
+		{"grok-imagine-video-1.5-preview", "grok-imagine-video-1.5", 0, 0, 0, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			record := Lookup(tt.modelID)
+			if record.Status != StatusPriced || record.PricingBasis != PricingBasisAliasListEquivalent || record.MappedFrom != tt.mappedFrom {
+				t.Fatalf("unexpected alias metadata: %#v", record)
+			}
+			if tt.videoRates > 0 {
+				if record.Tokens != nil || len(record.Videos) != tt.videoRates {
+					t.Fatalf("unexpected video alias pricing: %#v", record)
+				}
+				return
+			}
+			if record.Tokens == nil || record.Tokens.Input != tt.input || record.Tokens.CachedInput == nil || *record.Tokens.CachedInput != tt.cachedInput || record.Tokens.Output != tt.output {
+				t.Fatalf("unexpected token alias pricing: %#v", record)
+			}
+		})
 	}
 }
 
@@ -91,6 +143,10 @@ func TestClaudeCosts(t *testing.T) {
 	}
 	if _, ok := costs["gpt-5.3-codex-spark"]; ok {
 		t.Fatal("unavailable model was projected into Claude costs")
+	}
+	alias := costs["claude-opus-4-6-thinking"]
+	if alias.InputTokens != 5 || alias.OutputTokens != 25 || alias.PromptCacheReadTokens != 0.5 {
+		t.Fatalf("unexpected alias-equivalent Claude cost: %#v", alias)
 	}
 }
 
@@ -124,6 +180,7 @@ func TestParseRejectsMalformedCatalog(t *testing.T) {
 		{"negative", func(r *Record) { r.Tokens.Input = -1 }, "negative tokens rate"},
 		{"url", func(r *Record) { r.SourceURL = "not a URL" }, "invalid source_url"},
 		{"date", func(r *Record) { r.SnapshotDate = "yesterday" }, "invalid snapshot_date"},
+		{"mapping", func(r *Record) { r.PricingBasis = PricingBasisAliasListEquivalent }, "mapped_from is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

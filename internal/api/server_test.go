@@ -1553,6 +1553,7 @@ func TestPricingDiscoveryAndBootstrap(t *testing.T) {
 	modelRegistry.RegisterClient(clientID, "openai", []*registry.ModelInfo{
 		{ID: "gpt-5.4", Object: "model", OwnedBy: "openai", Type: "openai"},
 		{ID: "gpt-5.3-codex-spark", Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: "gemini-pro-agent", Object: "model", OwnedBy: "antigravity", Type: "openai"},
 		{ID: "model-discovered-after-snapshot", Object: "model", OwnedBy: "test", Type: "openai"},
 	})
 	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
@@ -1621,6 +1622,10 @@ func TestPricingDiscoveryAndBootstrap(t *testing.T) {
 		pricing, _ := priced["pricing"].(map[string]any)
 		if pricing["status"] != "priced" || priced["prompt_text_token_price"] != float64(25000) || priced["long_context_threshold"] != float64(272001) {
 			t.Fatalf("unexpected priced model: %#v", priced)
+		}
+		aliasPricing, _ := models["gemini-pro-agent"]["pricing"].(map[string]any)
+		if aliasPricing["status"] != "priced" || aliasPricing["pricing_basis"] != "alias_list_equivalent" || aliasPricing["mapped_from"] != "gemini-3.1-pro-preview" || models["gemini-pro-agent"]["long_context_threshold"] != float64(200001) {
+			t.Fatalf("unexpected alias-equivalent model: %#v", models["gemini-pro-agent"])
 		}
 		unavailablePricing, _ := models["gpt-5.3-codex-spark"]["pricing"].(map[string]any)
 		if unavailablePricing["status"] != "unavailable" || unavailablePricing["unavailable_reason"] != "research_preview_unpriced" {
