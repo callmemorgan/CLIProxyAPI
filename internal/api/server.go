@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/access"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/benchmarkusage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
@@ -298,6 +299,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
 	engine.Use(logging.CPATraceIDMiddleware())
+	engine.Use(benchmarkusage.ExtractHeader())
 	for _, mw := range optionState.extraMiddleware {
 		engine.Use(mw)
 	}
@@ -525,7 +527,9 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	v1.Use(benchmarkusage.AttachPrincipal())
 	{
+		v1.GET("/benchmark/usage/:benchmark_id", benchmarkusage.GetUsage)
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.GET("/models/:model_id", openaiHandlers.OpenAIModel)
 		v1.GET("/subscription-usage", s.mgmt.GetSubscriptionUsage)

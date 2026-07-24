@@ -19,10 +19,11 @@ and the rest of the proxy remain upstream architecture.
 | Claude-compatible model discovery | Advertise real provider model IDs instead of synthetic Claude-shaped aliases | `internal/util/claude_model.go`, `sdk/api/handlers/claude/code_handlers.go` |
 | Claude response identity | Return the exact model ID requested by the client in streaming and non-streaming responses | `sdk/api/handlers/claude/code_handlers.go` |
 | Legacy session compatibility | Continue decoding old `claude-fable-5-dd-<reversed-id>` values for routing | `internal/util/claude_model.go` |
-| Subscription quotas | Expose sanitized Codex, Grok, Antigravity, and Kimi quota windows | `internal/api/handlers/management/subscription_usage.go` |
+| Subscription quotas | Expose sanitized Claude, Codex, Grok, Antigravity, and Kimi quota windows | `internal/api/handlers/management/subscription_usage.go` |
 | Codex window labels | Classify 5-hour and weekly windows from their duration rather than primary/secondary order | `internal/api/handlers/management/subscription_usage.go` |
 | Claude context metadata | Advertise 1M-token context windows for the Claude routes used by the local harness | `internal/registry/models/models.json` |
 | Public list-price metadata | Project a curated, dated public-price snapshot into OpenAI/xAI model discovery and Claude Code bootstrap metadata | `internal/pricing/`, `sdk/api/handlers/openai/openai_handlers.go`, `internal/api/server.go` |
+| Claude-all benchmark telemetry | Correlate authenticated benchmark requests with short-lived sanitized route, latency, and token records | `internal/benchmarkusage/`, `internal/api/server.go` |
 | Reasoning diagnostics | Log the resolved upstream reasoning effort and whether it was configured | `internal/runtime/executor/helps/usage_helpers.go` |
 | xAI stream diagnostics | Log terminal stream state, translated completion markers, and token usage | `internal/runtime/executor/xai_executor.go` |
 
@@ -61,11 +62,12 @@ The fork adds an authenticated endpoint alongside the other `/v1` routes:
 
 ```http
 GET /v1/subscription-usage
-GET /v1/subscription-usage?providers=codex,grok,antigravity,kimi
+GET /v1/subscription-usage?providers=claude,codex,grok,antigravity,kimi
 ```
 
 Supported provider selectors are:
 
+- `claude`
 - `codex`
 - `grok`
 - `antigravity` or `agy`
@@ -112,8 +114,27 @@ The fork inspects `limit_window_seconds`:
 - six days or more is labeled `Codex weekly`
 - intermediate or missing durations retain the upstream fallback label
 
-The endpoint is consumed by `claude-all-usage`, which writes a sanitized cache
+The endpoint is consumed directly by `agents-statusline`, which writes a sanitized cache
 for the local status line.
+
+## Claude-all benchmark telemetry
+
+Authenticated generation requests may include a UUID in
+`X-Claude-All-Benchmark-ID`. The proxy validates and removes that header before
+request logging or upstream forwarding, then retains sanitized usage records in
+memory for ten minutes. The client that made the request can retrieve its
+records from:
+
+```http
+GET /v1/benchmark/usage/{benchmark-id}
+```
+
+The response contains the requested alias, concrete provider/model route,
+reasoning and service-tier settings, TTFT, total latency, terminal state, and
+token counters. It never contains prompts, responses, API keys, credential
+identities, arbitrary headers, or upstream bodies. Benchmark capture is
+independent of the general usage-statistics queue and is bounded to 2,048
+short-lived records.
 
 ## Public list-price metadata
 
