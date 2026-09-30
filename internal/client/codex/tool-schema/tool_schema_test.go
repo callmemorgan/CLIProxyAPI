@@ -255,6 +255,53 @@ func TestNormalizeCodexToolIntegerTypes(t *testing.T) {
 		}
 	})
 
+	t.Run("reserved collaboration namespace is left untouched", func(t *testing.T) {
+		nsInput := []byte(`{
+			"tools": [
+				{
+					"type": "namespace",
+					"name": "collaboration",
+					"tools": [
+						{
+							"type": "function",
+							"name": "wait_agent",
+							"parameters": {
+								"type": "object",
+								"properties": {
+									"timeout_ms": {"type": "number"}
+								}
+							}
+						}
+					]
+				},
+				{
+					"type": "namespace",
+					"name": "functions",
+					"tools": [
+						{
+							"type": "function",
+							"name": "sleep",
+							"parameters": {
+								"type": "object",
+								"properties": {
+									"duration_ms": {"type": "number"}
+								}
+							}
+						}
+					]
+				}
+			]
+		}`)
+		headers := http.Header{"User-Agent": []string{"codex-tui/0.159.0"}}
+		out := NormalizeCodexToolIntegerTypes(nsInput, headers)
+		if got := gjson.GetBytes(out, "tools.0.tools.0.parameters.properties.timeout_ms.type").String(); got != "number" {
+			t.Errorf("collaboration.wait_agent timeout_ms type = %q, want number", got)
+		}
+		if got := gjson.GetBytes(out, "tools.1.tools.0.parameters.properties.duration_ms.type").String(); got != "integer" {
+			t.Errorf("functions.sleep duration_ms type = %q, want integer", got)
+		}
+	})
+
 	t.Run("array type with number and integer deduplicates to single integer", func(t *testing.T) {
 		dupInput := []byte(`{
 			"tools": [

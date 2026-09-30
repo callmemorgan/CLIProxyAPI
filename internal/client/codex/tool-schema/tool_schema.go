@@ -35,6 +35,11 @@ func headerValueCaseInsensitive(headers http.Header, name string) string {
 	return ""
 }
 
+// codexReservedCollaborationNamespace is the namespace whose function schemas
+// the upstream enforces. For example, collaboration.wait_agent must keep
+// timeout_ms as number.
+const codexReservedCollaborationNamespace = "collaboration"
+
 var codexClientToolIntegerFields = map[string]map[string]struct{}{
 	"exec_command": {
 		"yield_time_ms":     struct{}{},
@@ -207,6 +212,11 @@ func normalizeToolIntegerTypesInElement(tool gjson.Result) ([]byte, bool) {
 
 	// Handle namespace tools
 	if tool.Get("type").String() == "namespace" {
+		// The upstream reserves the collaboration namespace and rejects any
+		// function whose schema differs from its own, so leave it untouched.
+		if tool.Get("name").String() == codexReservedCollaborationNamespace {
+			return toolRaw, false
+		}
 		nested := tool.Get("tools")
 		if nested.IsArray() {
 			if updated, ok := normalizeToolIntegerTypesInArray(nested); ok {
